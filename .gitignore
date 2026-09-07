@@ -1,0 +1,64 @@
+# --- Build (CMake) ---
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+Makefile
+*.a
+*.so
+*.o
+*.obj
+*.exe
+
+# --- CUDA / TensorRT artifacts ---
+*.cubin
+*.fatbin
+*.ptx
+*.engine
+*.plan
+*.trt
+
+# --- Python (Training Pipeline) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- pybind11 build artifacts ---
+*.so.*
+build_lib/
+
+# --- Aider ---
+.aider.chat.history.md
+.aider.conflict/
+.aider.input.history
+.aider.tags
+.aider.tags.location
+.aider.sentinel.txt
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+.clangd/
+compile_commands.json
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs & temp ---
+*.log
+*.tmp
+/tmp/
