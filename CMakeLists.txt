@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
+# --- Ensure Shared CUDA runtime linking to prevent static lib cudart issues ---
+set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
+
 # --- Locate CUDA toolkit before project() triggers compiler-ID test ------
 if(NOT DEFINED ENV{CUDA_HOME})
     if(EXISTS "/usr/local/cuda")
@@ -15,6 +18,9 @@ project(tiling_core LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CUDA_STANDARD 17)
+
+# --- Find CUDAToolkit (Creates the CUDA::cudart target & sets CUDA includes) ---
+find_package(CUDAToolkit REQUIRED)
 
 # --- Core library (CPU math) ---
 add_library(tiling_math STATIC src/tiling_math.cpp)
@@ -43,8 +49,12 @@ if(NOT TRT_INCLUDE_DIR OR NOT TRT_LIB OR NOT TRT_PLUGIN_LIB)
 endif()
 
 add_library(trt_detector STATIC src/trt_detector.cpp)
+
+# Обов'язково додаємо шляхи include для C++ файлу: заголовочні файли проєкту, TensorRT та CUDA
 target_include_directories(trt_detector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(trt_detector PRIVATE ${TRT_INCLUDE_DIR})
+target_include_directories(trt_detector PRIVATE ${TRT_INCLUDE_DIR} ${CUDAToolkit_INCLUDE_DIRS})
+
+# Лінкуємо TensorRT та офіційну ціль CUDA Runtime
 target_link_libraries(trt_detector PUBLIC ${TRT_LIB} ${TRT_PLUGIN_LIB})
 target_link_libraries(trt_detector PRIVATE CUDA::cudart)
 
@@ -55,10 +65,36 @@ add_executable(test_tiling_math tests/test_tiling_math.cpp)
 target_link_libraries(test_tiling_math PRIVATE tiling_math)
 add_test(NAME test_tiling_math COMMAND test_tiling_math)
 
+# --- Налаштування для test_cuda_slicer ---
 add_executable(test_cuda_slicer tests/test_cuda_slicer.cpp)
-target_link_libraries(test_cuda_slicer PRIVATE cuda_slicer)
+
+# Додаємо шляхи до CUDA include для C++ файла тесту:
+target_include_directories(test_cuda_slicer PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include 
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+# Лінкуємо бібліотеку slicer та CUDA runtime:
+target_link_libraries(test_cuda_slicer PRIVATE 
+    cuda_slicer 
+    CUDA::cudart
+)
 add_test(NAME test_cuda_slicer COMMAND test_cuda_slicer)
 
+# --- Налаштування для test_trt_detector ---
 add_executable(test_trt_detector tests/test_trt_detector.cpp)
-target_link_libraries(test_trt_detector PRIVATE trt_detector)
+
+# 1. Додаємо шляхи до include-директорій CUDA та TensorRT:
+target_include_directories(test_trt_detector PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include 
+    ${CUDAToolkit_INCLUDE_DIRS}
+    ${TRT_INCLUDE_DIR}
+)
+
+# 2. Лінкуємо trt_detector та runtime бібліотеку CUDA:
+target_link_libraries(test_trt_detector PRIVATE 
+    trt_detector
+    CUDA::cudart
+)
+
 add_test(NAME test_trt_detector COMMAND test_trt_detector)
