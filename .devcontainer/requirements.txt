@@ -1,0 +1,5 @@
+pybind11>=2.11.0
+torch
+ultralytics
+PySide6
+onnxruntime-gpu

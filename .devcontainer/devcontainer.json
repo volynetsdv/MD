@@ -1,0 +1,30 @@
+{
+  "name": "AeroDetect Dev Environment (C++/CUDA/TensorRT)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  // GPU pass-through is optional and only works on hosts with NVIDIA Container Toolkit installed.
+  // Keep this only on machines with a supported NVIDIA GPU; otherwise the container will fail to start.
+  "runArgs": [
+    "--gpus", "all",
+    "--ipc=host"
+  ],
+  "containerEnv": {
+    "DISPLAY": ""
+  },
+  "customizations": {
+    "vscode": {
+      // Автоматичне встановлення плагінів для C++, CUDA та Python
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-python.python"
+      ],
+      "settings": {
+        "cmake.configureOnOpen": true,
+        "python.defaultInterpreterPath": "/usr/bin/python3"
+      }
+    }
+  },
+  "remoteUser": "root"
+}
