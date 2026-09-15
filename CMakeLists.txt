@@ -58,6 +58,11 @@ target_include_directories(trt_detector PRIVATE ${TRT_INCLUDE_DIR} ${CUDAToolkit
 target_link_libraries(trt_detector PUBLIC ${TRT_LIB} ${TRT_PLUGIN_LIB})
 target_link_libraries(trt_detector PRIVATE CUDA::cudart)
 
+# --- Postprocessing module (Offset Mapping & Cluster-DIoU-NMS) ---
+add_library(postprocess STATIC src/postprocess.cpp)
+target_include_directories(postprocess PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(postprocess PUBLIC tiling_math)
+
 # --- Tests ---
 enable_testing()
 
@@ -98,3 +103,9 @@ target_link_libraries(test_trt_detector PRIVATE
 )
 
 add_test(NAME test_trt_detector COMMAND test_trt_detector)
+
+# --- Налаштування для test_postprocess ---
+add_executable(test_postprocess tests/test_postprocess.cpp)
+target_include_directories(test_postprocess PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_postprocess PRIVATE postprocess)
+add_test(NAME test_postprocess COMMAND test_postprocess)

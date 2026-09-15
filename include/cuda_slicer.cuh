@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+#ifndef TILE_RECT_DEFINED
+#define TILE_RECT_DEFINED
 /**
  * @brief Rectangle describing a tile region in the source image (pixel coords).
  */
@@ -12,6 +14,7 @@ struct TileRect {
     int w;   // width  in pixels
     int h;   // height in pixels
 };
+#endif
 
 /**
  * @brief Extract a tile from a GPU-resident BGR image, resize to model_target_size×model_target_size
