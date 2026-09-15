@@ -81,7 +81,7 @@ $$
 Крок сітки між сусідніми плитками обчислюється як:
 
 $$
-\text{step} = \operatorname{round}\bigl(M_{\text{selected}} \cdot (1 - O_{\text{lap}})\bigr)
+\text{step} = \text{round}\left(M_{\text{selected}} \cdot (1 - O_{\text{lap}})\right)
 $$
 
 Кількість колонок ($N_{\text{cols}}$) та рядків ($N_{\text{rows}}$) сітки для вхідного кадру розміром $W_{\text{img}} \times H_{\text{img}}$ визначається через округлення вгору:
