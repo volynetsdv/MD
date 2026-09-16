@@ -22,6 +22,14 @@ set(CUDA_STANDARD 17)
 # --- Find CUDAToolkit (Creates the CUDA::cudart target & sets CUDA includes) ---
 find_package(CUDAToolkit REQUIRED)
 
+# --- pybind11 & Python (for pytiling_core module) ---
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+find_package(pybind11 CONFIG REQUIRED
+    PATHS "${Python3_SITELIB}/pybind11/share/cmake/pybind11"
+          "/usr/local/lib/python3.10/dist-packages/pybind11/share/cmake/pybind11"
+)
+
+
 # --- Core library (CPU math) ---
 add_library(tiling_math STATIC src/tiling_math.cpp)
 target_include_directories(tiling_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -141,3 +149,30 @@ target_link_libraries(test_main_pipeline PRIVATE
     CUDA::cudart
 )
 add_test(NAME unit_test_main_pipeline COMMAND test_main_pipeline)
+
+# =============================================================================
+# pytiling_core — pybind11 Python extension module
+# =============================================================================
+# Builds a .so that Python can import directly:
+#   import pytiling_core
+# The module re-uses the same libtiling_math + libpostprocess implementations
+# (DRY principle — no duplicate logic).
+#
+# NOTE: trt_detector is NOT linked here on purpose: the Python binding only
+# exposes CPU tiling math and postprocessing. TensorRT inference stays in C++.
+# =============================================================================
+pybind11_add_module(pytiling_core bindings/bindings.cpp)
+
+target_include_directories(pytiling_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(pytiling_core PRIVATE
+    tiling_math
+    postprocess
+)
+
+# Place the .so next to the build directory root so tests can import it without
+# any PYTHONPATH surgery.
+set_target_properties(pytiling_core PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
