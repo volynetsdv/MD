@@ -125,3 +125,19 @@ target_link_libraries(main_pipeline PRIVATE
     CUDA::cudart
 )
 add_test(NAME test_main_pipeline COMMAND main_pipeline --width 7680 --height 4320 --altitude 100 --max-tiles 12)
+
+# --- Unit-тест для main_pipeline (test_main_pipeline) ---
+add_executable(test_main_pipeline tests/test_main_pipeline.cpp)
+target_include_directories(test_main_pipeline PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CUDAToolkit_INCLUDE_DIRS}
+    ${TRT_INCLUDE_DIR}
+)
+target_link_libraries(test_main_pipeline PRIVATE
+    tiling_math
+    cuda_slicer
+    trt_detector
+    postprocess
+    CUDA::cudart
+)
+add_test(NAME unit_test_main_pipeline COMMAND test_main_pipeline)
