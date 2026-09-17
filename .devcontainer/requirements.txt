@@ -3,3 +3,4 @@ torch
 ultralytics
 PySide6
 onnxruntime-gpu
+pytest>=7.0.0

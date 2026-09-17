@@ -18,6 +18,7 @@ project(tiling_core LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CUDA_STANDARD 17)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --- Find CUDAToolkit (Creates the CUDA::cudart target & sets CUDA includes) ---
 find_package(CUDAToolkit REQUIRED)
@@ -176,3 +177,7 @@ target_link_libraries(pytiling_core PRIVATE
 set_target_properties(pytiling_core PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+# --- Python Tests (pytiling_core & dataset_slicer) ---
+add_test(NAME test_binding COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_binding.py)
+add_test(NAME test_dataset_slicer COMMAND ${Python3_EXECUTABLE} -m pytest -v ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dataset_slicer.py)
