@@ -3,4 +3,5 @@ torch
 ultralytics
 PySide6
 onnxruntime-gpu
+onnx>=1.14.0
 pytest>=7.0.0

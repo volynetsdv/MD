@@ -178,6 +178,7 @@ set_target_properties(pytiling_core PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-# --- Python Tests (pytiling_core & dataset_slicer) ---
+# --- Python Tests (pytiling_core, dataset_slicer, export_profiles) ---
 add_test(NAME test_binding COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_binding.py)
 add_test(NAME test_dataset_slicer COMMAND ${Python3_EXECUTABLE} -m pytest -v ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dataset_slicer.py)
+add_test(NAME test_export_profiles COMMAND ${Python3_EXECUTABLE} -m pytest -v ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_export_profiles.py)
