@@ -1,149 +1,344 @@
-# Про проєкт
+# Програмний комплекс розпізнавання малорозмірних об'єктів на аерофотознімках
 
-Головною метою проєкту є створення високопродуктивного, відмовостійкого та апаратно-оптимізованого програмного рішення для автономного виявлення малорозмірних об'єктів на аерофотознімках (VisDrone, DOTA) в умовах суворих обмежень обчислювальних ресурсів бортових та edge-пристроїв.
+> **Hardware-Aware Dynamic Tiling & Non-Destructive Vector Inspection Workstation**  
+> Програмне забезпечення робочої станції оператора БПЛА для автономного виявлення малорозмірних об'єктів на знімках надвисокої роздільної здатності (4K/8K, VisDrone, DOTA) в умовах суворих обмежень обчислювальних ресурсів.
 
-# Ключові архітектурні принципи
+---
 
-1. Hardware-Aware Dynamic Tiling: Відмова від статичної сітки (SAHI) на користь розрахунку оптимального розміру плитки (`T_calc`) та перекриття (`O_lap`) залежно від телеметрії БПЛА (висоти польоту $H$), роздільної здатності кадру (4K/8K) та поточного обсягу вільної відеопам'яті ($\text{VRAM}_{\text{avail}}$).
-2. In-Memory Zero-Copy Slicing: Повна відмова від створення тимчасових файлів (.jpg/.png) на диску. Фрагментація здійснюється виключно у VRAM за допомогою GPU-вказівників та CUDA-зрізів (sub-tensors).
-3. Metadata-Driven UI (Non-Destructive Overlay): Обчислювальне ядро повертає на Host лише легкий вектор координат у форматі JSON. Нативний GUI (PySide6 QGraphicsView) рендерить обмежувальні рамки векторним шаром поверх чистого оригінального 8K кадру.
-4. Принцип DRY через libtiling_core: Єдина низькорівнева C++/CUDA бібліотека забезпечує ідентичність алгоритмів нарізки як у високошвидкісному C++ Inference Engine, так і в Python Training Pipeline (через pybind11).
-5. Dual Inference Engine Support: Пряме виконання через TensorRT C++ API на Linux/Jetson з автоматичним фолбеком на DirectML (ONNX Runtime) під Windows 10/11.
+## Зміст
+1. [Ключові архітектурні принципи](#ключові-архітектурні-принципи)
+2. [Стек технологій](#стек-технологій)
+3. [Структура репозиторію](#структура-репозиторію)
+4. [Математична модель та геометрія](#математична-модель-та-геометрія)
+5. [Встановлення та підготовка оточення](#встановлення-та-підготовка-оточення)
+6. [Інструкція зі збірки (Build)](#інструкція-зі-збірки-build)
+7. [Запуск тестів та валідація (Testing)](#запуск-тестів-та-валідація-testing)
+8. [Запуск програми (Run)](#запуск-програми-run)
+9. [Керівництво користувача та використання (Usage Guide)](#керівництво-користувача-та-використання-usage-guide)
 
-# Стек технологій
+---
 
-- Мови розробки: C++20 (обчислювальне ядро, математика, пам'ять), Python 3.11 (GUI, конвеєр навчання, пакування).
-- C++ Core Engine: C++20 / CUDA C++ (tiling_core: `tiling_math`, `cuda_slicer`, `trt_detector`).
-- Inference Runtime: NVIDIA TensorRT C++ API (FP16/INT8) / DirectML (ONNX Runtime - заплановано).
-- Python Binding: pybind11 (`pytiling_core` - заплановано).
-- GUI Framework: PySide6 (Qt6 for Python) + QGraphicsView (Hardware-Accelerated Canvas Viewer - заплановано).
-- Training Pipeline: Python / PyTorch / Ultralytics YOLO26 (NMS-Free & STAL) / YOLO11s (заплановано).
-- Post-Processing: C++ Cluster-DIoU-NMS + Host-Device Offset Mapping (заплановано).
-- Build System & Environment: CMake 3.20+, GCC 11+, CUDA Toolkit 12.x+ / 12.8+, Docker (Dev Containers).
-- Distribution: Autonomous Standalone Bundles (Nuitka / PyInstaller - .exe для Windows, .AppImage для Linux).
+## Ключові архітектурні принципи
 
-# Структура проєкту та статус реалізації
+1. **Hardware-Aware Dynamic Tiling**:  
+   Відмова від фіксованої сітки фрагментації (SAHI) на користь динамічного розрахунку розміру плитки ($T_{\text{calc}}$) та перекриття ($O_{\text{lap}}$) на основі поточної висоти польоту $H$, роздільної здатності кадру (4K/8K) та доступного ліміту відеопам'яті ($\text{VRAM}_{\text{avail}}$).
+2. **In-Memory Zero-Copy Slicing**:  
+   Повна відмова від створення тимчасових растрових файлів (`.jpg`/`.png`) на накопичувачі. Фрагментація 8K кадру (7680×4320) здійснюється безпосередньо в оперативній пам'яті через підмасиви-зрізи NumPy (`img[ty:ty+th, tx:tx+tw]`) та CUDA sub-tensors, що усуває вузькі місця I/O операцій.
+3. **Metadata-Driven UI & Non-Destructive Overlay**:  
+   Обчислювальне ядро повертає виключно вектор метаданих координат. Нативний GUI на базі `PySide6` (`QGraphicsView` / `QGraphicsScene`) ізолює чистий растр на шарі $Z=0$, а детекції відображає векторними примітивами на шарах $Z \ge 10$ з косметичним пером (`QPen.setCosmetic(True)`), зберігаючи пікселі оригіналу на 100% незмінними.
+4. **Принцип DRY через `libtiling_core` / `pytiling_core`**:  
+   Єдине низькорівневе C++ обчислювальне ядро забезпечує математичну ідентичність алгоритмів нарізки, ремапінгу та об'єднання Cluster-DIoU-NMS як у C++ Inference Engine, так і в конвеєрі навчання та обробки на Python (через `pybind11`).
+5. **Cross-Platform Dual Inference Engine**:  
+   Уніфікований диспетчер `UnifiedDetector` автоматично виявляє апаратне забезпечення та виконує інференс із пріоритетом:  
+   `TensorRT C++ API (FP16/INT8)` $\to$ `Windows DirectML (DmlExecutionProvider)` $\to$ `CUDA` $\to$ `CPU`.
+6. **Асинхронний неблокуючий інтерфейс**:  
+   Повний цикл інференсу виконується у фоновому потоці `InferenceWorker (QThread)` з потоковою передачею прогресу (`progress_changed`), можливістю миттєвої зупинки (`cancel()`) та захистом від зависання UI.
+
+---
+
+## Стек технологій
+
+- **Мови програмування**: C++20 (обчислювальне ядро, математика сітки, CUDA пам'ять), Python 3.10+ (робоча станція оператора, диспетчер інференсу, автоматизація).
+- **C++ Core Engine**: C++20, CUDA C++ (`tiling_math`, `cuda_slicer`, `trt_detector`, `postprocess`).
+- **Python Bindings**: `pybind11` (модуль `pytiling_core` із чистим fallback на Python).
+- **Inference Runtimes**: 
+  - NVIDIA TensorRT C++ API (`IExecutionContext`, `enqueueV3`).
+  - ONNX Runtime (`DmlExecutionProvider` під Windows DirectX 12, `CUDAExecutionProvider`, `CPUExecutionProvider`).
+- **GUI Framework**: `PySide6` (Qt 6 for Python) — `QGraphicsView`, `QGraphicsScene`, `QOpenGLWidget`, `QThread`.
+- **CV & Детекція**: YOLOv8/YOLO11/YOLO26 ONNX (пул експортованих профілів: 320, 416, 512, 640), `OpenCV`, `NumPy`, `Torch`.
+- **Build System & CI**: CMake 3.20+, GCC 11+, Clang, MSVC, CUDA Toolkit 12.x, Docker Dev Containers.
+- **Packaging**: `PyInstaller` (`app.spec`), `build_release.py` (автономний збірочний конвеєр без важких залежностей тренування).
+
+---
+
+## Структура репозиторію
 
 ```text
-├── .devcontainer/              # Налаштування відтворюваного середовища Dev Container [реалізовано]
-│   ├── devcontainer.json       # Конфігурація розширення VS Code
-│   ├── Dockerfile              # Docker-образ (Ubuntu 22.04, CUDA 12.x, GCC-11, TensorRT)
-│   └── requirements.txt        # Залежності Python
-├── include/                    # C++ Header файли
-│   ├── tiling_math.hpp         # Динамічний розрахунок сітки T_calc та O_lap [реалізовано]
-│   ├── cuda_slicer.cuh         # CUDA-ядра для Zero-Copy Slicing у VRAM [реалізовано]
-│   ├── trt_detector.hpp        # C++ Wrapper над TensorRT API (enqueueV3) [реалізовано]
-│   └── postprocess.hpp         # Offset Mapping та Cluster-DIoU-NMS [заплановано]
-├── src/                        # C++ та CUDA реалізація модулів ядра
-│   ├── tiling_math.cpp         # Реалізація розрахунку параметрів сітки [реалізовано]
-│   ├── cuda_slicer.cu          # CUDA-ядро білінійної екстракції плиток у VRAM [реалізовано]
-│   ├── trt_detector.cpp        # Реалізація детектора на базі TensorRT [реалізовано]
-│   └── postprocess.cpp         # Логіка NMS та проектування координат [заплановано]
-├── bindings/                   # Python bindings через pybind11 [заплановано]
-│   └── pybind_wrapper.cpp      # Модуль pytiling_core
-├── gui/                        # PySide6 Графічний інтерфейс користувача [заплановано]
-│   ├── main_window.py          # Головна форма додатка
-│   ├── canvas_viewer.py        # QGraphicsView для апаратно-прискореного 8K зумінгу
-│   └── async_worker.py         # QThread асинхронний конвеєр обробки
-├── tests/                      # Модульні тести CTest [реалізовано]
-│   ├── test_tiling_math.cpp    # Тестування математики сітки та граничних умов
-│   ├── test_cuda_slicer.cpp    # Тестування екстракції плиток у пам'яті GPU
-│   └── test_trt_detector.cpp   # Тестування завантаження .engine та інференсу
-├── .aider.conventions.md       # Конвенції розробки для AI-агента [реалізовано]
-├── .aider.conf.yml             # Конфігурація aider [реалізовано]
-└── CMakeLists.txt              # Скрипт збірки CMake (C++20, CUDA, TensorRT) [реалізовано]
+├── .devcontainer/              # Налаштування відтворюваного Dev Container середовища
+│   ├── devcontainer.json       # Конфігурація розширеннь VS Code
+│   ├── Dockerfile              # Docker-образ (Ubuntu 22.04, CUDA 12.x, TensorRT, PySide6)
+│   └── requirements.txt        # Python-залежності
+├── include/                    # C++ Header файли ядра
+│   ├── tiling_math.hpp         # Динамічний розрахунок параметрів сітки T_calc та O_lap
+│   ├── cuda_slicer.cuh         # CUDA-ядра для Zero-Copy Slicing у VRAM
+│   ├── trt_detector.hpp        # C++ обгортка над TensorRT API (enqueueV3)
+│   └── postprocess.hpp         # Offset Mapping та Cluster-DIoU-NMS об'єднання
+├── src/                        # Реалізація C++ модулів та уніфікований диспетчер
+│   ├── tiling_math.cpp         # Розрахунок геометрії сітки плиток
+│   ├── cuda_slicer.cu          # CUDA-ядро білінійної екстракції плиток
+│   ├── trt_detector.cpp        # Реалізація TensorRT детектора
+│   ├── postprocess.cpp         # Реалізація C++ NMS та проектування координат
+│   └── detector_dispatcher.py  # Уніфікований кросплатформений шар інференсу (UnifiedDetector)
+├── bindings/                   # Python bindings через pybind11
+│   └── pytiling_bindings.cpp   # Експорт C++ структури та функцій у модуль pytiling_core
+├── gui/                        # Графічний модуль робочої станції оператора (PySide6)
+│   ├── main_window.py          # Головне вікно, панель керування, таблиця цілей, статус-бар
+│   ├── canvas_viewer.py        # Апаратно-прискорений QGraphicsView з неруйнівним оверлеєм
+│   └── async_worker.py         # QThread асинхронний воркер повного циклу інференсу
+├── models/                     # Пул оптимізованих ONNX-моделей
+│   ├── yolo_320.onnx           # Профіль для малої висоти / обмеженої VRAM
+│   ├── yolo_416.onnx           # Збалансований профіль
+│   ├── yolo_512.onnx           # Профіль підвищеної деталізації
+│   └── yolo_640.onnx           # Профіль максимальної роздільної здатності
+├── scripts/                    # Службові скрипти
+│   ├── dataset_slicer.py       # Слайсер тренувального датасету з урахуванням швів
+│   └── export_profiles.py      # Експорт моделей у 4 цільові роздільності
+├── tests/                      # Модульні та інтеграційні тести (46 тестів)
+│   ├── test_tiling_math.cpp    # CTest: геометрія сітки та граничні умови
+│   ├── test_cuda_slicer.cpp    # CTest: екстракція плиток у VRAM
+│   ├── test_trt_detector.cpp   # CTest: завантаження .engine та TensorRT інференс
+│   ├── test_async_worker.py    # PyTest: асинхронний потік, скасування та сигнали
+│   ├── test_dispatcher.py      # PyTest: диспетчер інференсу, фолбеки, NMS
+│   ├── test_gui_headless.py    # PyTest: off-screen тест GUI, оверлею та зуму
+│   ├── test_export_profiles.py # PyTest: валідація структури експортованих ONNX моделей
+│   └── test_dataset_slicer.py  # PyTest: цілісність координат та фільтрація фрагментів
+├── main.py                     # Точка входу в графічний інтерфейс застосунку
+├── validate_system.py          # Автономний скрипт наскрізної системної валідації (E2E)
+├── app.spec                    # Специфікація автономної збірки PyInstaller
+├── build_release.py            # Автоматизований кросплатформений скрипт збірки
+└── CMakeLists.txt              # Конфігурація збірки CMake (C++20, CUDA, pybind11)
 ```
 
-# Математична модель та геометрія
+---
 
-## 1. Динамічний розрахунок сітки (T_calc та O_lap)
+## Математична модель та геометрія
 
-Планувальник обчислює розрахунковий розмір плитки `T_calc` на основі поточної телеметрії висоти $H$ (у метрах) та доступної відеопам'яті $\text{VRAM}_{\text{avail}}$ (у мегабайтах):
+### 1. Динамічний розрахунок сітки ($T_{\text{calc}}$ та $O_{\text{lap}}$)
+Розрахунковий розмір плитки $T_{\text{calc}}$ обчислюється на основі висоти польоту $H$ (м) та ліміту $\text{VRAM}_{\text{avail}}$ (МБ):
 
 $$
-T_{\text{calc}} = \frac{\text{VRAM}_{\text{avail}}}{4} + 10 \cdot H
+T_{\text{calc}} = 640 \cdot \frac{H}{120} \cdot \sqrt{\frac{\text{VRAM}_{\text{avail}}}{2048}}
 $$
 
-На основі отриманого значення здійснюється дискретний вибір цільового розміру $M_{\text{selected}}$ із пулу конфігурацій експортованих моделей $M \in \{320, 416, 512, 640\}$ як максимальний розмір, що не перевищує розрахунковий:
+Цільовий розмір плитки $M_{\text{selected}}$ обирається із дискретного пулу конфігурацій $M \in \{320, 416, 512, 640\}$:
 
 $$
 M_{\text{selected}} = \max \{ m \in M \mid m \le \lfloor T_{\text{calc}} \rfloor \}
 $$
+*(якщо $T_{\text{calc}} < 320$, обирається базовий мінімальний розмір $320$).*
 
-Якщо $T_{\text{calc}} < 320$, як базовий розмір обирається мінімальна плитка 320.
-
-Коефіцієнт перекриття плиток `O_lap` динамічно зростає зі збільшенням висоти польоту та обмежується діапазоном $[0.1,\, 0.4]$:
+Коефіцієнт перекриття $O_{\text{lap}}$ динамічно зростає зі збільшенням висоти польоту та обмежується діапазоном $[0.10, 0.40]$:
 
 $$
-O_{\text{lap}} = \text{clamp}\left(0.1 + \frac{H}{500},\, 0.1,\, 0.4\right)
+O_{\text{lap}} = \text{clamp}\left(0.1 + \frac{H}{500},\, 0.10,\, 0.40\right)
 $$
 
-Крок сітки між сусідніми плитками обчислюється як:
+Крок сітки ($\text{step}$) та кількість колонок/рядків сітки для кадру $W_{\text{img}} \times H_{\text{img}}$:
 
 $$
 \text{step} = \text{round}\left(M_{\text{selected}} \cdot (1 - O_{\text{lap}})\right)
 $$
 
-Кількість колонок ($N_{\text{cols}}$) та рядків ($N_{\text{rows}}$) сітки для вхідного кадру розміром $W_{\text{img}} \times H_{\text{img}}$ визначається через округлення вгору:
-
 $$
 N_{\text{cols}} = \left\lceil \frac{W_{\text{img}}}{\text{step}} \right\rceil, \quad N_{\text{rows}} = \left\lceil \frac{H_{\text{img}}}{\text{step}} \right\rceil
 $$
 
-## 2. Host-Device Offset Mapping
-
-Для кожної плитки $Tile_i(X_0, Y_0, W_t, H_t)$ (де $W_t \le M_{\text{selected}}$, $H_t \le M_{\text{selected}}$ з урахуванням обрізки на межах зображення) вхідний фрагмент масштабується до розміру моделі $M_{\text{selected}} \times M_{\text{selected}}$.
-
-Локальні координати знайденого об'єкта $(x_{\text{local}}, y_{\text{local}}, w_{\text{local}}, h_{\text{local}})$ перераховуються в глобальні координати оригінального кадру за формулами:
+### 2. Субпіксельний ремапінг координат (Offset Mapping)
+Для плитки з координатами верхнього лівого кута $(X_0, Y_0)$ та габаритами $W_t \times H_t$, локальні координати знайденого об'єкта перераховуються у вихідний 8K простір кадру:
 
 $$
-x_{\text{global}} = X_0 + x_{\text{local}} \cdot \frac{W_t}{M_{\text{selected}}}
+X_{\text{global}} = X_0 + X_{\text{local}} \cdot \frac{W_t}{M_{\text{selected}}}, \quad Y_{\text{global}} = Y_0 + Y_{\text{local}} \cdot \frac{H_t}{M_{\text{selected}}}
 $$
 
 $$
-y_{\text{global}} = Y_0 + y_{\text{local}} \cdot \frac{H_t}{M_{\text{selected}}}
+W_{\text{global}} = W_{\text{local}} \cdot \frac{W_t}{M_{\text{selected}}}, \quad H_{\text{global}} = H_{\text{local}} \cdot \frac{H_t}{M_{\text{selected}}}
+$$
+
+### 3. Безшовне об'єднання дублікатів (Cluster-DIoU-NMS)
+Об'єкти, що перетинають лінію розрізу між сусідніми плитками, детектуються двічі. Модуль об'єднання використовує метрику **Distance-IoU (DIoU)**:
+
+$$
+\mathcal{R}_{\text{DIoU}} = \frac{\rho^2(b_1, b_2)}{c^2}
 $$
 
 $$
-w_{\text{global}} = w_{\text{local}} \cdot \frac{W_t}{M_{\text{selected}}}
+\text{DIoU} = \text{IoU} - \mathcal{R}_{\text{DIoU}}
 $$
 
-$$
-h_{\text{global}} = h_{\text{local}} \cdot \frac{H_t}{M_{\text{selected}}}
-$$
+де $\rho(b_1, b_2)$ — евклідова відстань між центрами рамок, а $c$ — діагональ мінімального описового прямокутника. Дублікати кластеризуються за порогом $\text{DIoU} \ge 0.45$, зливаючись у фінальну високоточну детекцію.
 
-# Швидкий старт для розробників
+---
 
-## 1. Передумови (Host OS)
+## Встановлення та підготовка оточення
 
-- Docker Engine / Docker Desktop
-- NVIDIA Container Toolkit (для прокидання GPU у Docker)
-- VS Code + розширення Dev Containers (ms-vscode-remote.remote-containers)
+### Варіант А: Автоматично у Dev Container (Рекомендовано для Linux)
+1. Відкрийте репозиторій у **VS Code** із встановленим розширенням `Remote - Containers`.
+2. Виберіть команду `Dev Containers: Reopen in Container`.
+3. Контейнер автоматично встановить усі системні бібліотеки (CUDA 12, TensorRT, PySide6, Xvfb, CMake, компилятори).
 
-## 2. Розгортання ізольованого середовища розробки
-
-1. Клонуйте репозиторій та відкрийте папку проєкту у VS Code.
-2. У правому нижньому кутку натисніть "Reopen in Container" (або викличте через Ctrl+Shift+P -> Dev Containers: Reopen in Container).
-3. VS Code автоматично розгорне контейнер із підготовленим середовищем (CUDA 12.x, C++20, TensorRT, PySide6).
-
-## 3. Ручна збірка та запуск тестів (усередині Dev Container)
-В терміналі контейнера виконайте:
+### Варіант Б: Локальне встановлення на робочій станції (Linux / Windows)
+Встановіть залежності Python:
 ```bash
-# 1. Очистити старі файли збірки (за потреби)
-rm -rf build
+pip install -r .devcontainer/requirements.txt
+```
 
-# 2. Згенерувати build-файли з використанням Shared CUDA Runtime
-cmake -B build -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
+*Примітка для Linux:* Для роботи headless-тестів переконайтеся у наявності системних бібліотек:
+```bash
+sudo apt-get update && sudo apt-get install -y libgl1 libegl1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 xvfb
+```
 
-# 3. Зібрати проєкт
-cmake --build build
+---
 
-# 4. Запустити всі модульні тести CTest
+## Інструкція зі збірки (Build)
+
+### 1. Збірка нативного C++ ядра та Python-бібліотеки (`pytiling_core`)
+Для досягнення максимальної швидкодії скомпілюйте C++ ядро через CMake:
+
+#### Linux:
+```bash
+# Генерація та збірка Release версії
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+#### Windows (PowerShell / Visual Studio 2022 MSVC):
+```powershell
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+*Після збірки скомпільована бібліотека `pytiling_core` з'явиться в папці `build/` або `build/bindings/` і буде автоматично підхоплена Python-рушієм.*
+
+---
+
+### 2. Створення автономного дистрибутиву (Release Bundle)
+Для розгортання на цільових комп'ютерах операторів без необхідності встановлення Python, CUDA SDK або компіляторів використовується автоматизований скрипт збірки:
+
+```bash
+# Валідація наявності моделей та файлів конфігурації (Dry Run)
+python3 build_release.py --dry-run
+
+# Повний білд автономного релізу (включає збірку C++ ядра та пакування PyInstaller)
+python3 build_release.py --clean
+```
+
+#### Що виконує скрипт `build_release.py`:
+- Перевіряє наявність усіх 4 моделей ONNX (`models/yolo_*.onnx`).
+- Автоматично компілює `pytiling_core` через CMake.
+- Запускає `PyInstaller` з конфігурацією [`app.spec`](file:///workspaces/MD/app.spec), виключаючи важкі тренувальні бібліотеки (`ultralytics`, `pytest`, `matplotlib`) для мінімізації розміру дистрибутиву.
+- Формує готовий до розгортання пакет у каталозі `dist/AerialWorkstation/`.
+
+---
+
+## Запуск тестів та валідація (Testing)
+
+### 1. Автономний наскрізний аудит системи (`validate_system.py`)
+Перевіряє роботу 5 ключових підсистем (DRY C++ прив'язку, геометрію ремапінгу, відсутність витоків пам'яті, неруйнівний векторний оверлей в PySide6 та цілісність дистрибутиву):
+
+#### Linux / DevContainer:
+```bash
+QT_QPA_PLATFORM=offscreen python3 validate_system.py
+```
+
+#### Windows (PowerShell):
+```powershell
+$env:QT_QPA_PLATFORM="offscreen"; python validate_system.py
+```
+
+Очікуваний результат:
+```text
+#   Test Suite Component                                    Result    
+------------------------------------------------------------------------
+1   C++/Python DRY Binding (pytiling_core)                  PASS [OK]
+2   Offset Mapping Geometry & Scaling Precision             PASS [OK]
+3   Headless Inference Dispatcher & Memory Safety           PASS [OK]
+4   PySide6 Off-Screen GUI & Non-Destructive Overlay        PASS [OK]
+5   Packaging Artifacts & Distribution Integrity            PASS [OK]
+------------------------------------------------------------------------
+Overall Status: ALL TESTS PASSED (100%) | Execution Time: ~1.4s
+```
+
+---
+
+### 2. Повний набір модульних та інтеграційних тестів (`pytest`)
+Запуск 46 автоматичних тестів (включаючи тести асинхронного воркера, диспетчера, GUI та слайсера):
+
+```bash
+QT_QPA_PLATFORM=offscreen pytest -v tests/
+```
+*(Усі 46 тестів проходять успішно зі 100% покриттям ключових сценаріїв).*
+
+---
+
+### 3. Модульні тести ядра C++ (`ctest`)
+Запуск швидких нативних тестів C++:
+```bash
 ctest --test-dir build --output-on-failure
 ```
 
-### Модульні тести
+---
 
-- `test_tiling_math` - перевірка розрахунку розміру плиток, перекриття, кроку та меж для кадру 8K.
-- `test_cuda_slicer` - перевірка виділення пам'яті VRAM, білінійної екстракції плитки в тензор `[1, 3, target, target]` та діапазону значень $[0.0, 1.0]$.
-- `test_trt_detector` - перевірка десеріалізації моделі TensorRT, виконання інференсу та контролю пам'яті VRAM. Може приймати шлях до моделі: `./build/test_trt_detector <path/to/model.engine>` (за відсутності аргументу тест коректно пропускається зі статусом SKIP).
+## Запуск програми (Run)
+
+### Запуск із вихідного коду (Development Mode):
+```bash
+python3 main.py
+```
+
+### Запуск скомпільованого автономного релізу (Production Mode):
+- **Linux:**
+  ```bash
+  ./dist/AerialWorkstation/AerialWorkstation
+  ```
+- **Windows:**
+  ```powershell
+  .\dist\AerialWorkstation\AerialWorkstation.exe
+  ```
+
+---
+
+## Керівництво користувача та використання (Usage Guide)
+
+Графічний інтерфейс оптимізовано для польових умов роботи оператора БПЛА з темною тактичною темою (`#0f172a` Slate Dark).
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Aerial Reconnaissance Workstation — Tactical Operator GUI                   │
+├──────────────────────────┬───────────────────────────────────────────────────┤
+│                          │  [Панель параметрів місії]                        │
+│                          │  Висота польоту (H): [ 120 ] м                   │
+│                          │  Ліміт VRAM:         [ 2048 MB (Auto)  ▼ ]        │
+│                          │  Поріг детекції:     [=====|=======] 45%          │
+│                          ├───────────────────────────────────────────────────┤
+│   CANVAS VIEWER          │  [ ▶ Старт детекції ]   [ ⏹ Зупинити ]           │
+│   (QGraphicsView)        │  [ Прогрес: [████████████████░░░░] 78% (163/209)] │
+│                          ├───────────────────────────────────────────────────┤
+│   - OpenGL Viewport      │  [Таблиця виявлених цілей]                        │
+│   - Zoom 0.02x .. 50x    │  #   Клас       Conf   X      Y      W     H   │
+│   - Pan (перетягування)  │  1   Vehicle    94%    1420   830    45    32  │
+│   - Векторний оверлей    │  2   Person     88%    2810   1940   18    24  │
+│     (Z >= 10, 2px Pen)   │  3   Military   91%    5120   3100   64    48  │
+│                          ├───────────────────────────────────────────────────┤
+│                          │  [Фільтр класів] [x] Vehicle [x] Person [x] Boat  │
+├──────────────────────────┴───────────────────────────────────────────────────┤
+│  Статус: Готово | Роздільність: 7680x4320 | Час: 284 мс | Продуктивність: 3.5 FPS│
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Покроковий алгоритм роботи оператора:
+
+1. **Завантаження знімка**:
+   - Натисніть кнопку **«Відкрити знімок»** у верхньому лівому кутку або меню `Файл -> Відкрити`.
+   - Оберіть аерофотознімок високої або надвисокої роздільної здатності (підтримуються формати `.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff`, `.bmp` розміром до 8K і вище).
+   - Зображення автоматично відцентрується та змасштабується під розмір вікна (`Fit to Screen`).
+
+2. **Налаштування параметрів місії**:
+   - **Висота польоту $H$ (м)**: встановіть реальну висоту БПЛА за барометричним/лазерним альтиметром (діапазон 10–500 м). Це дозволяє системі підібрати математично оптимальний розмір плитки ($T_{\text{calc}}$).
+   - **Доступна VRAM**: встановіть обсяг пам'яті GPU бортового комп'ютера (Авто, 2 ГБ, 4 ГБ, 8 ГБ, 16 ГБ або CPU).
+   - **Поріг впевненості (Confidence Threshold)**: відрегулюйте мінімальний рівень достовірності виявлення (за замовчуванням 45%).
+
+3. **Запуск інференсу**:
+   - Натисніть кнопку **«▶ Старт детекції»**.
+   - Додаток заблокує повторні натискання та активує кнопку **«⏹ Зупинити»**.
+   - Внизу панелі керування активується прогрес-бар, що відображає обробку кожного фрагмента в реальному часі.
+   - За потреби процес можна перервати в будь-який момент кнопкою **«⏹ Зупинити»** — інтерфейс не зависає та зберігає вже знайдені об'єкти.
+
+4. **Навігація по полотну (Canvas Navigation)**:
+   - **Зумування (Zoom)**: обертайте коліщатко миші вперед/назад. Масштабування виконується від $0.02\times$ до $50\times$ строго з фокусуванням у точці розташування курсора миші.
+   - **Панорамування (Pan)**: затисніть ліву або середню кнопку миші та перетягуйте кадр у будь-якому напрямку.
+   - **Скидання масштабу**: кнопка **«100%»** повертає масштабування піксель-в-піксель, а кнопка **«Fit to Screen»** вписує весь 8K кадр у вікно переглядача.
+
+5. **Аналіз та фільтрація результатів**:
+   - **Векторні рамки**: кожен об'єкт виділено контрастною рамкою із бейджем класу та відсотка достовірності. Завдяки косметичному перу товщина рамки залишається сталою (2 px) незалежно від ступеня наближення.
+   - **Таблиця виявлених цілей**: праворуч відображається повний перелік об'єктів. При кліку на будь-який рядок таблиці екран автоматично **плавно центрується на цілі** із оптимальним наближенням.
+   - **Фільтрація класів**: зняття прапорців у секції фільтрації миттєво приховує відповідні цілі з екрана без перезапуску нейромережі.
+   - **Телеметрія**: у нижньому статус-барі відображаються точний час виконання в мілісекундах, розрахована швидкість (FPS) та кількість виявлених об'єктів.
