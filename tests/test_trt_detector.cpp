@@ -10,30 +10,36 @@
 #include <cstdlib>
 #include <vector>
 
-namespace {
-int g_failures = 0;
+namespace
+{
+    int g_failures = 0;
 
-#define CHECK(cond, msg)                                          \
-    do {                                                          \
-        if (!(cond)) {                                           \
-            std::fprintf(stderr, "FAIL: %s\n", msg);              \
-            ++g_failures;                                        \
-        }                                                         \
+#define CHECK(cond, msg)                             \
+    do                                               \
+    {                                                \
+        if (!(cond))                                 \
+        {                                            \
+            std::fprintf(stderr, "FAIL: %s\n", msg); \
+            ++g_failures;                            \
+        }                                            \
     } while (0)
 } // namespace
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[])
+{
     // ------------------------------------------------------------------
     // Graceful skip if no engine provided or file missing.
     // ------------------------------------------------------------------
-    if (argc < 2) {
+    if (argc < 2)
+    {
         std::fprintf(stderr, "SKIP: no .engine path provided.\n");
         return 0;
     }
-    const char* engine_path = argv[1];
+    const char *engine_path = argv[1];
 
-    FILE* f = std::fopen(engine_path, "rb");
-    if (!f) {
+    FILE *f = std::fopen(engine_path, "rb");
+    if (!f)
+    {
         std::fprintf(stderr, "SKIP: '%s' not found.\n", engine_path);
         return 0;
     }
@@ -54,7 +60,7 @@ int main(int argc, char* argv[]) {
     const int W = 640, H = 640, C = 3;
     const size_t in_bytes = static_cast<size_t>(C) * H * W * sizeof(float);
 
-    float* d_input = nullptr;
+    float *d_input = nullptr;
     CHECK(cudaMalloc(&d_input, in_bytes) == cudaSuccess, "cudaMalloc input");
     CHECK(cudaMemset(d_input, 0, in_bytes) == cudaSuccess, "cudaMemset input");
 
@@ -77,7 +83,8 @@ int main(int argc, char* argv[]) {
     // ------------------------------------------------------------------
     cudaFree(d_input);
 
-    if (g_failures == 0) {
+    if (g_failures == 0)
+    {
         std::fprintf(stderr, "PASS: all checks passed.\n");
         return 0;
     }

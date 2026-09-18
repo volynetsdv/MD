@@ -3,14 +3,16 @@
 #include <cstddef>
 #include <vector>
 
-struct Rect {
+struct Rect
+{
     int x;
     int y;
     int w;
     int h;
 };
 
-struct TilingConfig {
+struct TilingConfig
+{
     int tile_size{0};
     float overlap{0.0f};
     int grid_cols{0};

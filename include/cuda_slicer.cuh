@@ -8,11 +8,12 @@
 /**
  * @brief Rectangle describing a tile region in the source image (pixel coords).
  */
-struct TileRect {
-    int x;   // top-left corner x
-    int y;   // top-left corner y
-    int w;   // width  in pixels
-    int h;   // height in pixels
+struct TileRect
+{
+    int x; // top-left corner x
+    int y; // top-left corner y
+    int w; // width  in pixels
+    int h; // height in pixels
 };
 #endif
 
@@ -31,10 +32,10 @@ struct TileRect {
  * @param d_dst_tensor    Pre-allocated float32 buffer in VRAM, size ≥ 3 × target² floats.
  * @return cudaError_t    CUDA status code.
  */
-cudaError_t extract_tile_gpu(const uint8_t* d_src_img,
+cudaError_t extract_tile_gpu(const uint8_t *d_src_img,
                              int src_stride_bytes,
                              int src_w,
                              int src_h,
-                             const TileRect& rect,
+                             const TileRect &rect,
                              int model_target_size,
-                             float* d_dst_tensor);
+                             float *d_dst_tensor);

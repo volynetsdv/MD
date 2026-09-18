@@ -4,7 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
-int main() {
+int main()
+{
     // 8K frame: 7680 x 4320
     const int image_width = 7680;
     const int image_height = 4320;
@@ -36,12 +37,12 @@ int main() {
     assert(static_cast<int>(cfg.tiles.size()) == cfg.grid_cols * cfg.grid_rows);
 
     // First tile anchored at origin with full size
-    const Rect& first = cfg.tiles.front();
+    const Rect &first = cfg.tiles.front();
     assert(first.x == 0 && first.y == 0);
     assert(first.w == 512 && first.h == 512);
 
     // Last tile must not exceed image bounds
-    const Rect& last = cfg.tiles.back();
+    const Rect &last = cfg.tiles.back();
     assert(last.x + last.w <= image_width);
     assert(last.y + last.h <= image_height);
 

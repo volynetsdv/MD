@@ -7,27 +7,32 @@
 #include <string>
 #include <vector>
 
-namespace {
+namespace
+{
 
-int g_failures = 0;
+    int g_failures = 0;
 
-#define CHECK(cond, msg)                                            \
-    do {                                                            \
-        if (!(cond)) {                                              \
+#define CHECK(cond, msg)                                                 \
+    do                                                                   \
+    {                                                                    \
+        if (!(cond))                                                     \
+        {                                                                \
             std::fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); \
-            ++g_failures;                                           \
-        }                                                           \
+            ++g_failures;                                                \
+        }                                                                \
     } while (0)
 
-#define CHECK_NEAR(val, expected, eps, msg)                         \
-    do {                                                            \
-        if (std::fabs((val) - (expected)) > (eps)) {                \
+#define CHECK_NEAR(val, expected, eps, msg)                                           \
+    do                                                                                \
+    {                                                                                 \
+        if (std::fabs((val) - (expected)) > (eps))                                    \
+        {                                                                             \
             std::fprintf(stderr, "FAIL: %s (got %f, expected %f, eps %f, line %d)\n", \
-                         msg, static_cast<double>(val),             \
-                         static_cast<double>(expected),             \
-                         static_cast<double>(eps), __LINE__);       \
-            ++g_failures;                                           \
-        }                                                           \
+                         msg, static_cast<double>(val),                               \
+                         static_cast<double>(expected),                               \
+                         static_cast<double>(eps), __LINE__);                         \
+            ++g_failures;                                                             \
+        }                                                                             \
     } while (0)
 
 } // namespace
@@ -37,7 +42,8 @@ int g_failures = 0;
 //    Simulate two detections of one object at the seam/overlap of two adjacent tiles
 //    and verify their merging into a single global vector.
 // ---------------------------------------------------------------------------
-void test_seam_detection_merging() {
+void test_seam_detection_merging()
+{
     std::printf("--- Running test_seam_detection_merging ---\n");
 
     // 8K frame grid (7680 x 4320)
@@ -56,8 +62,7 @@ void test_seam_detection_merging() {
         .w = 60.0f,
         .h = 40.0f,
         .conf = 0.85f,
-        .class_id = 0
-    };
+        .class_id = 0};
 
     // In Tile 1 local space: (450 - 400, 200 - 0) = (50, 200)
     // With realistic detector jitter (+1 px on x, -1 px on y, slightly different size & conf)
@@ -67,8 +72,7 @@ void test_seam_detection_merging() {
         .w = 59.0f,
         .h = 41.0f,
         .conf = 0.92f,
-        .class_id = 0
-    };
+        .class_id = 0};
 
     // Step 1: remap local coordinates to 8K global space
     GlobalDetection det0_global = remap_offsets(det0_local, tile0, 512, /*tile_id=*/0);
@@ -90,8 +94,9 @@ void test_seam_detection_merging() {
     // Verify fusion into a SINGLE global detection
     CHECK(merged.size() == 1, "Duplicate seam detections must be merged into 1 global detection");
 
-    if (merged.size() == 1) {
-        const auto& m = merged[0];
+    if (merged.size() == 1)
+    {
+        const auto &m = merged[0];
         // Confidence should be max(0.85, 0.92) = 0.92
         CHECK_NEAR(m.conf, 0.92f, 0.001f, "Merged confidence is max of cluster");
         CHECK(m.class_id == 0, "Merged class_id is 0");
@@ -117,7 +122,8 @@ void test_seam_detection_merging() {
 // ---------------------------------------------------------------------------
 // 2. Test: Distinct objects in non-overlapping regions must NOT be merged
 // ---------------------------------------------------------------------------
-void test_distinct_objects_no_merge() {
+void test_distinct_objects_no_merge()
+{
     std::printf("--- Running test_distinct_objects_no_merge ---\n");
 
     TileRect tile0{0, 0, 512, 512};
@@ -126,15 +132,11 @@ void test_distinct_objects_no_merge() {
 
     // Object A inside tile 0 interior (x=100)
     GlobalDetection det_a{
-        .x = 100.0f, .y = 100.0f, .w = 40.0f, .h = 40.0f,
-        .conf = 0.90f, .class_id = 0, .tile_id = 0
-    };
+        .x = 100.0f, .y = 100.0f, .w = 40.0f, .h = 40.0f, .conf = 0.90f, .class_id = 0, .tile_id = 0};
 
     // Object B inside tile 1 interior (x=700)
     GlobalDetection det_b{
-        .x = 700.0f, .y = 100.0f, .w = 40.0f, .h = 40.0f,
-        .conf = 0.88f, .class_id = 0, .tile_id = 1
-    };
+        .x = 700.0f, .y = 100.0f, .w = 40.0f, .h = 40.0f, .conf = 0.88f, .class_id = 0, .tile_id = 1};
 
     auto result = cluster_diou_nms({det_a, det_b}, tiles, 0.5f);
     CHECK(result.size() == 2, "Distinct distant objects must both be preserved");
@@ -143,7 +145,8 @@ void test_distinct_objects_no_merge() {
 // ---------------------------------------------------------------------------
 // 3. Test: Overlapping detections of DIFFERENT classes must NOT be merged
 // ---------------------------------------------------------------------------
-void test_different_classes_no_merge() {
+void test_different_classes_no_merge()
+{
     std::printf("--- Running test_different_classes_no_merge ---\n");
 
     TileRect tile0{0, 0, 512, 512};
@@ -152,13 +155,9 @@ void test_different_classes_no_merge() {
 
     // Both at seam, but class 0 vs class 1
     GlobalDetection det_car{
-        .x = 450.0f, .y = 200.0f, .w = 50.0f, .h = 30.0f,
-        .conf = 0.89f, .class_id = 0, .tile_id = 0
-    };
+        .x = 450.0f, .y = 200.0f, .w = 50.0f, .h = 30.0f, .conf = 0.89f, .class_id = 0, .tile_id = 0};
     GlobalDetection det_person{
-        .x = 452.0f, .y = 201.0f, .w = 48.0f, .h = 28.0f,
-        .conf = 0.82f, .class_id = 1, .tile_id = 1
-    };
+        .x = 452.0f, .y = 201.0f, .w = 48.0f, .h = 28.0f, .conf = 0.82f, .class_id = 1, .tile_id = 1};
 
     auto result = cluster_diou_nms({det_car, det_person}, tiles, 0.5f);
     CHECK(result.size() == 2, "Detections of different classes must not be merged");
@@ -167,7 +166,8 @@ void test_different_classes_no_merge() {
 // ---------------------------------------------------------------------------
 // 4. Test: Edge tile scaling with model_target_size (W_t != M_selected)
 // ---------------------------------------------------------------------------
-void test_remap_scaling() {
+void test_remap_scaling()
+{
     std::printf("--- Running test_remap_scaling ---\n");
 
     // Partial boundary tile: width 256, height 512, scaled from model_target_size = 512
@@ -178,8 +178,7 @@ void test_remap_scaling() {
         .w = 50.0f,
         .h = 60.0f,
         .conf = 0.95f,
-        .class_id = 2
-    };
+        .class_id = 2};
 
     GlobalDetection g = remap_offsets(local_det, edge_tile, /*model_target_size=*/512);
 
@@ -197,15 +196,15 @@ void test_remap_scaling() {
 // ---------------------------------------------------------------------------
 // 5. Test: JSON formatting
 // ---------------------------------------------------------------------------
-void test_json_formatting() {
+void test_json_formatting()
+{
     std::printf("--- Running test_json_formatting ---\n");
 
     std::vector<GlobalDetection> empty;
     CHECK(to_json_string(empty) == "[]", "Empty vector must produce []");
 
     std::vector<GlobalDetection> dets = {
-        {.x = 10.0f, .y = 20.0f, .w = 30.0f, .h = 40.0f, .conf = 0.9123f, .class_id = 1}
-    };
+        {.x = 10.0f, .y = 20.0f, .w = 30.0f, .h = 40.0f, .conf = 0.9123f, .class_id = 1}};
 
     std::string compact = to_json_string(dets, false);
     CHECK(compact.find("{\"x\":10.00,\"y\":20.00,\"w\":30.00,\"h\":40.00,\"conf\":0.9123,\"class_id\":1}") != std::string::npos,
@@ -215,14 +214,16 @@ void test_json_formatting() {
     CHECK(pretty.find("\n") != std::string::npos, "Pretty JSON has newlines");
 }
 
-int main() {
+int main()
+{
     test_seam_detection_merging();
     test_distinct_objects_no_merge();
     test_different_classes_no_merge();
     test_remap_scaling();
     test_json_formatting();
 
-    if (g_failures == 0) {
+    if (g_failures == 0)
+    {
         std::printf("\nALL POSTPROCESS TESTS PASSED!\n");
         return 0;
     }
@@ -230,4 +231,3 @@ int main() {
     std::fprintf(stderr, "\nFAILED with %d error(s).\n", g_failures);
     return 1;
 }
-

@@ -12,25 +12,27 @@
 /**
  * @brief Rectangle describing a tile region in the source image (pixel coords).
  */
-struct TileRect {
-    int x{0};   ///< top-left corner x
-    int y{0};   ///< top-left corner y
-    int w{0};   ///< width in pixels
-    int h{0};   ///< height in pixels
+struct TileRect
+{
+    int x{0}; ///< top-left corner x
+    int y{0}; ///< top-left corner y
+    int w{0}; ///< width in pixels
+    int h{0}; ///< height in pixels
 };
 #endif
 
 /**
  * @brief Detection in global frame coordinates (e.g. 8K image space).
  */
-struct GlobalDetection {
-    float x{0.0f};       ///< Top-left X in global frame (px)
-    float y{0.0f};       ///< Top-left Y in global frame (px)
-    float w{0.0f};       ///< Bounding-box width (px)
-    float h{0.0f};       ///< Bounding-box height (px)
-    float conf{0.0f};    ///< Confidence score [0, 1]
-    int   class_id{0};   ///< Class index
-    int   tile_id{-1};   ///< Source tile index (-1 if unknown)
+struct GlobalDetection
+{
+    float x{0.0f};    ///< Top-left X in global frame (px)
+    float y{0.0f};    ///< Top-left Y in global frame (px)
+    float w{0.0f};    ///< Bounding-box width (px)
+    float h{0.0f};    ///< Bounding-box height (px)
+    float conf{0.0f}; ///< Confidence score [0, 1]
+    int class_id{0};  ///< Class index
+    int tile_id{-1};  ///< Source tile index (-1 if unknown)
 };
 
 using BBox = GlobalDetection;
@@ -52,41 +54,41 @@ using BBox = GlobalDetection;
  * @param tile_id            Optional identifier of source tile.
  * @return GlobalDetection   Detection with coordinates translated to global frame.
  */
-GlobalDetection remap_offsets(const Detection& local_det,
-                              const TileRect& tile,
+GlobalDetection remap_offsets(const Detection &local_det,
+                              const TileRect &tile,
                               int model_target_size = 0,
                               int tile_id = -1);
 
-GlobalDetection remap_offsets(const Detection& local_det,
-                              const Rect& tile,
+GlobalDetection remap_offsets(const Detection &local_det,
+                              const Rect &tile,
                               int model_target_size = 0,
                               int tile_id = -1);
 
 /**
  * @brief Remap a vector of detections from tile-local coordinates to global 8K coordinates.
  */
-std::vector<GlobalDetection> remap_offsets(const std::vector<Detection>& local_dets,
-                                          const TileRect& tile,
-                                          int model_target_size = 0,
-                                          int tile_id = -1);
+std::vector<GlobalDetection> remap_offsets(const std::vector<Detection> &local_dets,
+                                           const TileRect &tile,
+                                           int model_target_size = 0,
+                                           int tile_id = -1);
 
-std::vector<GlobalDetection> remap_offsets(const std::vector<Detection>& local_dets,
-                                          const Rect& tile,
-                                          int model_target_size = 0,
-                                          int tile_id = -1);
+std::vector<GlobalDetection> remap_offsets(const std::vector<Detection> &local_dets,
+                                           const Rect &tile,
+                                           int model_target_size = 0,
+                                           int tile_id = -1);
 
 /**
  * @brief Scalar coordinate translation from tile-local to global frame.
  */
 void remap_offsets(float x_local, float y_local, float w_local, float h_local,
-                   const TileRect& tile,
-                   float& x_global, float& y_global, float& w_global, float& h_global,
+                   const TileRect &tile,
+                   float &x_global, float &y_global, float &w_global, float &h_global,
                    int model_target_size = 0);
 
 /**
  * @brief Calculate standard Intersection over Union (IoU) between two global detections.
  */
-float calculate_iou(const GlobalDetection& a, const GlobalDetection& b);
+float calculate_iou(const GlobalDetection &a, const GlobalDetection &b);
 
 /**
  * @brief Calculate Distance-IoU (DIoU) between two global detections.
@@ -94,7 +96,7 @@ float calculate_iou(const GlobalDetection& a, const GlobalDetection& b);
  * DIoU = IoU - (d^2 / c^2)
  * where d is Euclidean distance between box centers, and c is diagonal of the smallest enclosing box.
  */
-float calculate_diou(const GlobalDetection& a, const GlobalDetection& b);
+float calculate_diou(const GlobalDetection &a, const GlobalDetection &b);
 
 /**
  * @brief Cluster-DIoU-NMS: clusters and merges duplicate bounding boxes at tile overlap boundaries.
@@ -117,17 +119,17 @@ float calculate_diou(const GlobalDetection& a, const GlobalDetection& b);
  * @param conf_threshold  Minimum confidence threshold to keep (default 0.0).
  * @return std::vector<GlobalDetection> Merged and filtered global detections.
  */
-std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>& detections,
+std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection> &detections,
                                               float diou_threshold = 0.5f,
                                               float conf_threshold = 0.0f);
 
-std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>& detections,
-                                              const std::vector<TileRect>& tiles,
+std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection> &detections,
+                                              const std::vector<TileRect> &tiles,
                                               float diou_threshold = 0.5f,
                                               float conf_threshold = 0.0f);
 
-std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>& detections,
-                                              const std::vector<Rect>& tiles,
+std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection> &detections,
+                                              const std::vector<Rect> &tiles,
                                               float diou_threshold = 0.5f,
                                               float conf_threshold = 0.0f);
 
@@ -143,5 +145,4 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
  * @param pretty      If true, format with indentation; otherwise compact JSON.
  * @return std::string JSON representation.
  */
-std::string to_json_string(const std::vector<GlobalDetection>& detections, bool pretty = false);
-
+std::string to_json_string(const std::vector<GlobalDetection> &detections, bool pretty = false);
