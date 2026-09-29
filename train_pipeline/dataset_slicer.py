@@ -1,22 +1,28 @@
 """
-Dataset Slicer for High-Resolution Aerial Imagery (YOLO / Ultralytics format).
+Dataset Slicer for High-Resolution Aerial Imagery (YOLO / DOTA / VisDrone format).
 
 Integrates with the compiled C++/pybind11 libtiling_core (pytiling_core) to apply
 hardware-aware dynamic tiling, zero-loss boundary box remapping, fragment filtering,
 and parallel multi-core slicing.
 """
 
+from __future__ import annotations
+
+import argparse
 import concurrent.futures
+import json
 import logging
 import math
 import os
 import sys
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+import yaml
 
 # =============================================================================
 # Safe Import of pytiling_core
@@ -99,6 +105,421 @@ class YOLOBox:
         class_id = int(parts[0])
         xc, yc, w, h = map(float, parts[1:5])
         return cls(class_id=class_id, x_center=xc, y_center=yc, width=w, height=h)
+
+
+# =============================================================================
+# Categories and Annotation Adapters
+# =============================================================================
+DOTA_V15_CLASSES: Dict[str, int] = {
+    "plane": 0,
+    "ship": 1,
+    "storage-tank": 2,
+    "baseball-diamond": 3,
+    "tennis-court": 4,
+    "basketball-court": 5,
+    "ground-track-field": 6,
+    "harbor": 7,
+    "bridge": 8,
+    "large-vehicle": 9,
+    "small-vehicle": 10,
+    "helicopter": 11,
+    "roundabout": 12,
+    "soccer-ball-field": 13,
+    "swimming-pool": 14,
+    "container-crane": 15,
+}
+
+VISDRONE_CLASSES: Dict[str, int] = {
+    "pedestrian": 0,
+    "people": 1,
+    "bicycle": 2,
+    "car": 3,
+    "van": 4,
+    "truck": 5,
+    "tricycle": 6,
+    "awning-tricycle": 7,
+    "bus": 8,
+    "motor": 9,
+}
+
+
+class BaseAnnotationAdapter(ABC):
+    """Abstract base class for dataset annotation adapters."""
+
+    @property
+    @abstractmethod
+    def format_name(self) -> str:
+        """Return the unique format identifier."""
+        pass
+
+    @abstractmethod
+    def get_class_names(self) -> Dict[int, str]:
+        """Return dictionary mapping class IDs to class names."""
+        pass
+
+    @abstractmethod
+    def parse_line(
+        self,
+        line: str,
+        img_w: int = 0,
+        img_h: int = 0,
+        **kwargs: Any,
+    ) -> Optional[YOLOBox]:
+        """Parse a single line from an annotation file into a normalized YOLOBox."""
+        pass
+
+    def parse_file(
+        self,
+        file_path: Union[str, Path],
+        img_w: int = 0,
+        img_h: int = 0,
+        **kwargs: Any,
+    ) -> List[YOLOBox]:
+        """Parse an entire annotation file into a list of normalized YOLOBox instances."""
+        w = kwargs.get("img_width", img_w)
+        h = kwargs.get("img_height", img_h)
+
+        boxes: List[YOLOBox] = []
+        path = Path(file_path)
+        if not path.exists():
+            return boxes
+
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                box = self.parse_line(line, img_w=w, img_h=h, **kwargs)
+                if box is not None:
+                    boxes.append(box)
+        return boxes
+
+
+class YoloHBBAdapter(BaseAnnotationAdapter):
+    """
+    Adapter for standard YOLO Horizontal Bounding Box (HBB) annotations.
+
+    Expected format: class_id x_center y_center width height (normalized in [0.0, 1.0]).
+    """
+
+    def __init__(self, class_map: Optional[Dict[str, int]] = None):
+        self.class_map = class_map
+
+    @property
+    def format_name(self) -> str:
+        return "yolo"
+
+    def get_class_names(self) -> Dict[int, str]:
+        if self.class_map:
+            return {int(v): str(k) for k, v in self.class_map.items()}
+        return {int(v): str(k) for k, v in VISDRONE_CLASSES.items()}
+
+    def parse_line(
+        self,
+        line: str,
+        img_w: int = 0,
+        img_h: int = 0,
+        **kwargs: Any,
+    ) -> Optional[YOLOBox]:
+        line_str = line.strip()
+        if not line_str or line_str.startswith("#"):
+            return None
+        try:
+            return YOLOBox.from_yolo_line(line_str)
+        except Exception as e:
+            logger.debug("YOLO parse error on line '%s': %s", line_str, e)
+            return None
+
+
+class YoloOBBAdapter(BaseAnnotationAdapter):
+    """
+    Adapter for YOLO-OBB format annotations (9 numerical tokens).
+
+    Expected format:
+    class_id x1 y1 x2 y2 x3 y3 x4 y4
+    where coordinates are already normalized floats in [0.0, 1.0].
+    Converts oriented bounding boxes into minimal axis-aligned bounding boxes (AABB).
+    """
+
+    def __init__(self, class_map: Optional[Dict[str, int]] = None):
+        self.class_map = class_map
+
+    @property
+    def format_name(self) -> str:
+        return "yolo_obb"
+
+    def get_class_names(self) -> Dict[int, str]:
+        if self.class_map:
+            return {int(v): str(k) for k, v in self.class_map.items()}
+        return {int(v): str(k) for k, v in DOTA_V15_CLASSES.items()}
+
+    def parse_line(
+        self,
+        line: str,
+        img_w: int = 0,
+        img_h: int = 0,
+        **kwargs: Any,
+    ) -> Optional[YOLOBox]:
+        line_str = line.strip()
+        if not line_str or line_str.startswith("#"):
+            return None
+
+        parts = line_str.split()
+        if len(parts) != 9:
+            return None
+
+        try:
+            class_id = int(float(parts[0]))
+            coords = [float(p) for p in parts[1:9]]
+        except ValueError:
+            return None
+
+        xs = coords[0::2]  # x1, x2, x3, x4
+        ys = coords[1::2]  # y1, y2, y3, y4
+
+        x_min = min(xs)
+        x_max = max(xs)
+        y_min = min(ys)
+        y_max = max(ys)
+
+        # Clamping to normalized space [0.0, 1.0]
+        x_min = max(0.0, min(1.0, x_min))
+        x_max = max(0.0, min(1.0, x_max))
+        y_min = max(0.0, min(1.0, y_min))
+        y_max = max(0.0, min(1.0, y_max))
+
+        w = x_max - x_min
+        h = y_max - y_min
+        if w <= 1e-6 or h <= 1e-6:
+            return None
+
+        xc = (x_min + x_max) / 2.0
+        yc = (y_min + y_max) / 2.0
+
+        xc = max(0.0, min(1.0, xc))
+        yc = max(0.0, min(1.0, yc))
+        w = max(0.0, min(1.0, w))
+        h = max(0.0, min(1.0, h))
+
+        return YOLOBox(class_id=class_id, x_center=xc, y_center=yc, width=w, height=h)
+
+
+class DotaOBBAdapter(BaseAnnotationAdapter):
+    """
+    Adapter for DOTA v1.5 Oriented Bounding Box (OBB) annotations.
+
+    Parses 8-point polygon coordinates: x1 y1 x2 y2 x3 y3 x4 y4 class_name [difficult]
+    Ignores header metadata (imagesource:, gsd:, comments).
+    Converts oriented bounding boxes into minimal axis-aligned bounding boxes (AABB)
+    and normalizes coordinates to [0.0, 1.0] relative to (img_w, img_h).
+    """
+
+    def __init__(
+        self,
+        class_map: Optional[Dict[str, int]] = None,
+        ignore_difficult: bool = False,
+    ):
+        self._custom_class_map = class_map
+        if class_map is not None:
+            self.class_map = {
+                self._normalize_class_name(k): v for k, v in class_map.items()
+            }
+        else:
+            self.class_map = self._build_default_class_map()
+        self.ignore_difficult = ignore_difficult
+
+    def get_class_names(self) -> Dict[int, str]:
+        if self._custom_class_map is not None:
+            return {int(v): str(k) for k, v in self._custom_class_map.items()}
+        return {int(v): str(k) for k, v in DOTA_V15_CLASSES.items()}
+
+    @staticmethod
+    def _normalize_class_name(name: str) -> str:
+        """Normalize class names: lower-case, strip, replace spaces/underscores with hyphens."""
+        return name.strip().lower().replace("_", "-").replace(" ", "-")
+
+    @classmethod
+    def _build_default_class_map(cls) -> Dict[str, int]:
+        mapping = dict(DOTA_V15_CLASSES)
+        aliases = {
+            "storage tank": 2,
+            "storagetank": 2,
+            "baseball diamond": 3,
+            "tennis court": 4,
+            "basketball court": 5,
+            "ground track field": 6,
+            "harbour": 7,
+            "large vehicle": 9,
+            "small vehicle": 10,
+            "soccer ball field": 13,
+            "swimming pool": 14,
+            "container crane": 15,
+        }
+        for alias, cid in aliases.items():
+            mapping[cls._normalize_class_name(alias)] = cid
+        return mapping
+
+    @property
+    def format_name(self) -> str:
+        return "dota"
+
+    def parse_line(
+        self,
+        line: str,
+        img_w: int = 0,
+        img_h: int = 0,
+        **kwargs: Any,
+    ) -> Optional[YOLOBox]:
+        w_img = kwargs.get("img_width", img_w)
+        h_img = kwargs.get("img_height", img_h)
+
+        line_str = line.strip()
+        if not line_str or line_str.startswith("#"):
+            return None
+
+        lower_str = line_str.lower()
+        if lower_str.startswith("imagesource:") or lower_str.startswith("gsd:"):
+            return None
+
+        parts = line_str.split()
+        if len(parts) < 9:
+            return None
+
+        try:
+            coords = [float(p) for p in parts[:8]]
+        except ValueError:
+            return None
+
+        trailing = parts[8:]
+        difficult = 0
+        if len(trailing) >= 2:
+            try:
+                difficult = int(trailing[-1])
+                raw_class_name = " ".join(trailing[:-1])
+            except ValueError:
+                raw_class_name = " ".join(trailing)
+        else:
+            raw_class_name = trailing[0]
+
+        if self.ignore_difficult and difficult == 1:
+            return None
+
+        norm_class = self._normalize_class_name(raw_class_name)
+        if norm_class not in self.class_map:
+            logger.debug("DOTA class '%s' not recognized in class_map, skipping.", norm_class)
+            return None
+        class_id = self.class_map[norm_class]
+
+        if w_img <= 0 or h_img <= 0:
+            return None
+
+        xs = coords[0::2]
+        ys = coords[1::2]
+
+        x_min = min(xs)
+        x_max = max(xs)
+        y_min = min(ys)
+        y_max = max(ys)
+
+        # Clamping to image bounds
+        x_min = max(0.0, min(float(w_img), x_min))
+        x_max = max(0.0, min(float(w_img), x_max))
+        y_min = max(0.0, min(float(h_img), y_min))
+        y_max = max(0.0, min(float(h_img), y_max))
+
+        w_px = x_max - x_min
+        h_px = y_max - y_min
+        if w_px <= 1e-6 or h_px <= 1e-6:
+            return None
+
+        # Normalized coordinates relative to full image
+        xc = (x_min + x_max) / (2.0 * float(w_img))
+        yc = (y_min + y_max) / (2.0 * float(h_img))
+        w = w_px / float(w_img)
+        h = h_px / float(h_img)
+
+        xc = max(0.0, min(1.0, xc))
+        yc = max(0.0, min(1.0, yc))
+        w = max(0.0, min(1.0, w))
+        h = max(0.0, min(1.0, h))
+
+        return YOLOBox(class_id=class_id, x_center=xc, y_center=yc, width=w, height=h)
+
+
+def detect_format(label_file_path: Union[str, Path]) -> str:
+    """
+    Automatically detect annotation format from a label file.
+
+    Returns
+    -------
+    str
+        'yolo' for normalized YOLO HBB (5 numerical columns)
+        'yolo_obb' for normalized YOLO OBB (9 numerical columns: class_id x1 y1 x2 y2 x3 y3 x4 y4)
+        'dota' for DOTA OBB (8 numerical coordinates + class name string [+ difficult])
+    """
+    path = Path(label_file_path)
+    if not path.exists():
+        return "yolo"
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                lower = line.lower()
+                if lower.startswith("imagesource:") or lower.startswith("gsd:"):
+                    continue
+
+                parts = line.split()
+                # 1. Check for standard YOLO HBB: exactly 5 tokens
+                if len(parts) == 5:
+                    try:
+                        _ = int(float(parts[0]))
+                        _ = [float(p) for p in parts[1:5]]
+                        return "yolo"
+                    except ValueError:
+                        pass
+
+                # 2. Check for YOLO-OBB: exactly 9 numerical tokens (first is int, rest are floats <= 1.05)
+                if len(parts) == 9:
+                    try:
+                        _ = int(float(parts[0]))
+                        coords = [float(p) for p in parts[1:9]]
+                        if all(c <= 1.05 for c in coords):
+                            return "yolo_obb"
+                    except ValueError:
+                        pass
+
+                # 3. Check for DOTA: at least 9 tokens where first 8 are coordinates and trailing is class name
+                if len(parts) >= 9:
+                    try:
+                        _ = [float(p) for p in parts[:8]]
+                        return "dota"
+                    except ValueError:
+                        pass
+    except Exception as err:
+        logger.warning("Failed to detect format from '%s': %s", path, err)
+
+    return "yolo"
+
+
+def get_adapter(
+    format_name: str = "auto",
+    class_map: Optional[Dict[str, int]] = None,
+    ignore_difficult: bool = False,
+) -> BaseAnnotationAdapter:
+    """
+    Factory to instantiate the appropriate annotation adapter.
+    """
+    fmt = (format_name or "auto").strip().lower()
+    if fmt in ("yolo", "yolo_hbb", "hbb", "visdrone"):
+        return YoloHBBAdapter(class_map=class_map)
+    elif fmt in ("yolo_obb", "yolo-obb", "obb_yolo", "yolobb"):
+        return YoloOBBAdapter(class_map=class_map)
+    elif fmt in ("dota", "dota_obb", "obb", "dota1.5", "dota_v15"):
+        return DotaOBBAdapter(class_map=class_map, ignore_difficult=ignore_difficult)
+    else:
+        raise ValueError(
+            f"Unsupported annotation format: '{format_name}'. Supported formats: 'yolo', 'yolo_obb', 'dota', 'auto'."
+        )
 
 
 # =============================================================================
@@ -229,6 +650,9 @@ def _process_image_task(task_params: Dict[str, Any]) -> Dict[str, Any]:
     resize_to_target = bool(task_params.get("resize_to_target", True))
     save_empty_tiles = bool(task_params.get("save_empty_tiles", False))
     image_quality = int(task_params.get("image_quality", 95))
+    format_name = task_params.get("format_name", "auto")
+    class_map = task_params.get("class_map")
+    ignore_difficult = bool(task_params.get("ignore_difficult", False))
 
     result = {
         "image_name": img_path.name,
@@ -246,17 +670,20 @@ def _process_image_task(task_params: Dict[str, Any]) -> Dict[str, Any]:
 
         img_h, img_w = img.shape[:2]
 
-        # Read annotations if available
+        # Read and adapt annotations if available
         boxes: List[YOLOBox] = []
         if ann_path and ann_path.exists():
-            with open(ann_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line_str = line.strip()
-                    if line_str:
-                        try:
-                            boxes.append(YOLOBox.from_yolo_line(line_str))
-                        except Exception as e:
-                            logger.warning(f"Error parsing line '{line_str}' in {ann_path}: {e}")
+            if format_name == "auto":
+                resolved_fmt = detect_format(ann_path)
+            else:
+                resolved_fmt = format_name
+
+            adapter = get_adapter(
+                format_name=resolved_fmt,
+                class_map=class_map,
+                ignore_difficult=ignore_difficult,
+            )
+            boxes = adapter.parse_file(ann_path, img_w=img_w, img_h=img_h)
 
         # Compute dynamic tiling parameters via libtiling_core
         tiling_config = pytiling_core.calculate_tiling_params(
@@ -327,6 +754,7 @@ def _process_image_task(task_params: Dict[str, Any]) -> Dict[str, Any]:
         result["success"] = True
         result["tiles_saved"] = tiles_saved
         result["annotations_saved"] = annotations_saved
+        result["tile_size"] = effective_target_size
 
     except Exception as exc:
         result["error"] = str(exc)
@@ -344,7 +772,8 @@ class AerialDatasetSlicer:
     Features:
     - Dynamic grid calculation using pytiling_core for resolutions [320, 416, 512, 640].
     - Zero-loss and fragment-filtered bounding box transformation with strict boundary clamping.
-    - Standard Ultralytics YOLO output layout: images/train, labels/train.
+    - Standard Ultralytics YOLO output layout: images/split, labels/split.
+    - Multi-format annotation adapters: YOLO HBB, DOTA v1.5 OBB -> HBB.
     - Multi-process parallel slicing using ProcessPoolExecutor for massive 8K datasets.
     """
 
@@ -369,6 +798,10 @@ class AerialDatasetSlicer:
             ".tif",
             ".tiff",
         ),
+        format: str = "auto",
+        class_map: Optional[Dict[str, int]] = None,
+        ignore_difficult: bool = False,
+        **kwargs: Any,
     ):
         """
         Initialize the AerialDatasetSlicer.
@@ -378,7 +811,7 @@ class AerialDatasetSlicer:
         image_dir : Union[str, Path]
             Path to folder containing source aerial images.
         annotation_dir : Union[str, Path]
-            Path to folder containing corresponding YOLO format .txt annotations.
+            Path to folder containing corresponding annotations (.txt).
         output_dir : Union[str, Path]
             Destination directory where Ultralytics structure (images/split, labels/split)
             will be created.
@@ -401,7 +834,13 @@ class AerialDatasetSlicer:
             Number of worker processes for ProcessPoolExecutor. If None, defaults
             to os.cpu_count().
         image_extensions : Tuple[str, ...]
-            Supported image file extensions.
+            Supported image file extensions (case-insensitive).
+        format : str
+            Annotation format: 'auto' (detect), 'yolo' (YOLO HBB), or 'dota' (DOTA v1.5 OBB).
+        class_map : Optional[Dict[str, int]]
+            Optional mapping of category names to integer class IDs for DOTA.
+        ignore_difficult : bool
+            If True, skips annotations marked with difficult=1 in DOTA.
         """
         self.image_dir = Path(image_dir)
         self.annotation_dir = Path(annotation_dir)
@@ -415,6 +854,9 @@ class AerialDatasetSlicer:
         self.resize_to_target = resize_to_target
         self.num_workers = num_workers or os.cpu_count() or 1
         self.image_extensions = tuple(ext.lower() for ext in image_extensions)
+        self.format = kwargs.get("format_name", format)
+        self.class_map = class_map
+        self.ignore_difficult = ignore_difficult
 
         # Build directory paths according to Ultralytics YOLO format
         self.out_images_dir = self.output_dir / "images" / self.split
@@ -423,7 +865,7 @@ class AerialDatasetSlicer:
         self.out_labels_dir.mkdir(parents=True, exist_ok=True)
 
     def find_image_files(self) -> List[Path]:
-        """Find all matching image files in image_dir."""
+        """Find all matching image files in image_dir (case-insensitive matching)."""
         if not self.image_dir.exists():
             return []
         files = [
@@ -458,6 +900,10 @@ class AerialDatasetSlicer:
         else:
             ann_path = Path(annotation_path)
 
+        resolved_fmt = self.format
+        if resolved_fmt == "auto" and ann_path.exists():
+            resolved_fmt = detect_format(ann_path)
+
         task_params = {
             "img_path": str(img_path),
             "ann_path": str(ann_path) if ann_path.exists() else None,
@@ -470,9 +916,83 @@ class AerialDatasetSlicer:
             "resize_to_target": self.resize_to_target,
             "save_empty_tiles": self.save_empty_tiles,
             "image_quality": 95,
+            "format_name": resolved_fmt,
+            "class_map": self.class_map,
+            "ignore_difficult": self.ignore_difficult,
         }
 
-        return _process_image_task(task_params)
+        res = _process_image_task(task_params)
+        if res.get("success"):
+            effective_tile_size = res.get("tile_size", self.target_size or 512)
+            yaml_path, meta_path = self._generate_dataset_configs(
+                resolved_fmt=resolved_fmt,
+                effective_tile_size=effective_tile_size,
+            )
+            res["dataset_yaml"] = str(yaml_path)
+            res["slicing_meta"] = str(meta_path)
+            res["tile_size"] = effective_tile_size
+        return res
+
+    def _generate_dataset_configs(
+        self,
+        resolved_fmt: str,
+        effective_tile_size: int,
+    ) -> Tuple[Path, Path]:
+        """
+        Generate Ultralytics dataset.yaml and slicing_meta.json in output_dir.
+        """
+        adapter = get_adapter(
+            format_name=resolved_fmt,
+            class_map=self.class_map,
+            ignore_difficult=self.ignore_difficult,
+        )
+        class_names_dict = adapter.get_class_names()
+        sorted_names = {
+            int(k): str(v)
+            for k, v in sorted(class_names_dict.items(), key=lambda item: item[0])
+        }
+
+        # Ultralytics path resolution: relative to dataset path
+        train_path = (
+            "images/train"
+            if (self.output_dir / "images" / "train").exists()
+            else f"images/{self.split}"
+        )
+        val_path = (
+            "images/val"
+            if (self.output_dir / "images" / "val").exists()
+            else train_path
+        )
+
+        yaml_content = {
+            "path": str(self.output_dir.resolve()),
+            "train": train_path,
+            "val": val_path,
+            "names": sorted_names,
+        }
+
+        dataset_yaml_path = self.output_dir / "dataset.yaml"
+        with open(dataset_yaml_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(yaml_content, f, sort_keys=False)
+
+        slicing_meta = {
+            "tile_size": int(effective_tile_size),
+            "altitude": float(self.altitude),
+            "vram_mb": int(self.vram_mb),
+            "classes_count": len(sorted_names),
+            "format": resolved_fmt,
+            "split": self.split,
+        }
+
+        slicing_meta_path = self.output_dir / "slicing_meta.json"
+        with open(slicing_meta_path, "w", encoding="utf-8") as f:
+            json.dump(slicing_meta, f, indent=2, ensure_ascii=False)
+
+        logger.info(
+            f"Generated dataset configurations: '{dataset_yaml_path}' and '{slicing_meta_path}' "
+            f"(tile_size={effective_tile_size}, classes={len(sorted_names)})"
+        )
+        return dataset_yaml_path, slicing_meta_path
 
     def process_dataset(self) -> Dict[str, Any]:
         """
@@ -486,18 +1006,67 @@ class AerialDatasetSlicer:
         image_files = self.find_image_files()
         total_images = len(image_files)
 
-        logger.info(
-            f"Starting dataset slicing: {total_images} images found in '{self.image_dir}' "
-            f"using {self.num_workers} worker processes."
-        )
+        if total_images == 0:
+            raise FileNotFoundError(
+                f"No image files found in '{self.image_dir}' matching extensions: {self.image_extensions}"
+            )
 
-        tasks: List[Dict[str, Any]] = []
+        # Pair images with annotations
+        matching_tasks: List[Dict[str, Any]] = []
+        found_labels_count = 0
+        first_ann_file: Optional[Path] = None
+
         for img_path in image_files:
             ann_path = self.annotation_dir / f"{img_path.stem}.txt"
+            if ann_path.exists():
+                found_labels_count += 1
+                if first_ann_file is None:
+                    first_ann_file = ann_path
+                actual_ann_str: Optional[str] = str(ann_path)
+            else:
+                actual_ann_str = None
+
+            matching_tasks.append({
+                "img_path": str(img_path),
+                "ann_path": actual_ann_str,
+            })
+
+        if found_labels_count == 0:
+            raise FileNotFoundError(
+                f"No matching .txt annotation files found in '{self.annotation_dir}' "
+                f"for {total_images} images located in '{self.image_dir}'."
+            )
+
+        # Resolve annotation format
+        if self.format.lower() == "auto":
+            resolved_fmt = detect_format(first_ann_file) if first_ann_file else "yolo"
+        else:
+            resolved_fmt = self.format.lower()
+
+        if resolved_fmt == "dota":
+            fmt_display = "DOTA v1.5 (OBB -> HBB conversion)"
+        elif resolved_fmt in ("yolo_obb", "yolo-obb"):
+            fmt_display = "YOLO-OBB (Normalized OBB -> HBB conversion)"
+        elif resolved_fmt == "yolo":
+            fmt_display = "YOLO HBB"
+        else:
+            fmt_display = resolved_fmt.upper()
+
+        telemetry_lines = [
+            f"[INFO] Знайдено зображень: {total_images}",
+            f"[INFO] Знайдено відповідних файлів анотацій: {found_labels_count}",
+            f"[INFO] Визначено формат розмітки: {fmt_display}",
+        ]
+        for t_line in telemetry_lines:
+            print(t_line)
+            logger.info(t_line)
+
+        tasks: List[Dict[str, Any]] = []
+        for mt in matching_tasks:
             tasks.append(
                 {
-                    "img_path": str(img_path),
-                    "ann_path": str(ann_path) if ann_path.exists() else None,
+                    "img_path": mt["img_path"],
+                    "ann_path": mt["ann_path"],
                     "out_images_dir": str(self.out_images_dir),
                     "out_labels_dir": str(self.out_labels_dir),
                     "altitude": self.altitude,
@@ -507,6 +1076,9 @@ class AerialDatasetSlicer:
                     "resize_to_target": self.resize_to_target,
                     "save_empty_tiles": self.save_empty_tiles,
                     "image_quality": 95,
+                    "format_name": resolved_fmt,
+                    "class_map": self.class_map,
+                    "ignore_difficult": self.ignore_difficult,
                 }
             )
 
@@ -514,6 +1086,7 @@ class AerialDatasetSlicer:
         total_annotations = 0
         failed_count = 0
         errors: List[str] = []
+        effective_tile_size = self.target_size
 
         if self.num_workers <= 1 or len(tasks) <= 1:
             for t in tasks:
@@ -521,6 +1094,8 @@ class AerialDatasetSlicer:
                 if res["success"]:
                     total_tiles += res["tiles_saved"]
                     total_annotations += res["annotations_saved"]
+                    if effective_tile_size is None and "tile_size" in res:
+                        effective_tile_size = res["tile_size"]
                 else:
                     failed_count += 1
                     errors.append(f"{res['image_name']}: {res['error']}")
@@ -533,12 +1108,22 @@ class AerialDatasetSlicer:
                         if res["success"]:
                             total_tiles += res["tiles_saved"]
                             total_annotations += res["annotations_saved"]
+                            if effective_tile_size is None and "tile_size" in res:
+                                effective_tile_size = res["tile_size"]
                         else:
                             failed_count += 1
                             errors.append(f"{res['image_name']}: {res['error']}")
                     except Exception as exc:
                         failed_count += 1
                         errors.append(str(exc))
+
+        if effective_tile_size is None:
+            effective_tile_size = 512
+
+        yaml_path, meta_path = self._generate_dataset_configs(
+            resolved_fmt=resolved_fmt,
+            effective_tile_size=effective_tile_size,
+        )
 
         summary = {
             "total_images": total_images,
@@ -548,6 +1133,10 @@ class AerialDatasetSlicer:
             "total_annotations_generated": total_annotations,
             "output_images_dir": str(self.out_images_dir),
             "output_labels_dir": str(self.out_labels_dir),
+            "detected_format": resolved_fmt,
+            "dataset_yaml": str(yaml_path),
+            "slicing_meta": str(meta_path),
+            "tile_size": effective_tile_size,
             "errors": errors,
         }
 
@@ -558,3 +1147,81 @@ class AerialDatasetSlicer:
 
         return summary
 
+
+# =============================================================================
+# CLI Entry Point
+# =============================================================================
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Dataset Slicer for High-Resolution Aerial Imagery (DOTA / VisDrone / YOLO)"
+    )
+    parser.add_argument("--image-dir", "-i", type=str, required=True, help="Path to input images directory")
+    parser.add_argument("--annotation-dir", "-a", type=str, required=True, help="Path to annotations directory")
+    parser.add_argument("--output-dir", "-o", type=str, required=True, help="Output directory for sliced dataset")
+    parser.add_argument(
+        "--format",
+        "-f",
+        type=str,
+        default="auto",
+        choices=["auto", "yolo", "yolo_obb", "dota"],
+        help="Dataset annotation format (default: auto)",
+    )
+    parser.add_argument("--altitude", type=float, default=100.0, help="Flight altitude in meters (default: 100.0)")
+    parser.add_argument("--vram-mb", type=int, default=2048, help="Target VRAM in MB (default: 2048)")
+    parser.add_argument(
+        "--min-area-ratio",
+        type=float,
+        default=0.25,
+        help="Minimum area ratio threshold to keep fragments (default: 0.25)",
+    )
+    parser.add_argument(
+        "--target-size",
+        type=int,
+        default=None,
+        choices=[320, 416, 512, 640],
+        help="Target tile square resolution override",
+    )
+    parser.add_argument("--split", type=str, default="train", help="Dataset split name (default: train)")
+    parser.add_argument(
+        "--save-empty-tiles",
+        action="store_true",
+        help="Save tiles that contain no annotations",
+    )
+    parser.add_argument(
+        "--no-resize",
+        action="store_true",
+        help="Do not resize crops to target size",
+    )
+    parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=None,
+        help="Number of worker processes (default: cpu count)",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    args = parse_args()
+    slicer = AerialDatasetSlicer(
+        image_dir=args.image_dir,
+        annotation_dir=args.annotation_dir,
+        output_dir=args.output_dir,
+        altitude=args.altitude,
+        vram_mb=args.vram_mb,
+        min_area_ratio=args.min_area_ratio,
+        target_size=args.target_size,
+        split=args.split,
+        save_empty_tiles=args.save_empty_tiles,
+        resize_to_target=not args.no_resize,
+        num_workers=args.workers,
+        format=args.format,
+    )
+    summary = slicer.process_dataset()
+    return 0 if summary["failed_count"] == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
