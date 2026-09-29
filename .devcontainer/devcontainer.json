@@ -7,10 +7,13 @@
   // Keep this only on machines with a supported NVIDIA GPU; otherwise the container will fail to start.
   "runArgs": [
     "--gpus", "all",
-    "--ipc=host"
+    "--ipc=host",
+    "--net=host",
+    "-e", "DISPLAY=${env:DISPLAY}",
+    "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw"
   ],
   "containerEnv": {
-    "DISPLAY": ""
+    "DISPLAY": "${localEnv:DISPLAY}"
   },
   "customizations": {
     "vscode": {
