@@ -25,7 +25,12 @@
       ],
       "settings": {
         "cmake.configureOnOpen": true,
-        "python.defaultInterpreterPath": "/usr/bin/python3"
+        "python.defaultInterpreterPath": "/usr/bin/python3",
+        "cmake.generator": "Unix Makefiles",
+        "cmake.configureSettings": {
+          "CMAKE_C_COMPILER": "/usr/bin/gcc",
+          "CMAKE_CXX_COMPILER": "/usr/bin/g++"
+        }
       }
     }
   },
