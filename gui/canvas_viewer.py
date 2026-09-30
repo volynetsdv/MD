@@ -34,25 +34,43 @@ from PySide6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-# High-contrast tactical color palette mapped by class_id
+# High-contrast tactical color palette mapped by class_id (DOTA 1.5 - 16 classes)
 TACTICAL_PALETTE: Dict[int, QColor] = {
-    0: QColor("#00FF66"),  # Neon Green   - Light vehicle / Person
-    1: QColor("#00E5FF"),  # Neon Cyan    - Heavy truck / Transport
-    2: QColor("#FFD600"),  # Bright Gold  - Armored / Combat Vehicle
-    3: QColor("#FF3366"),  # Neon Crimson - Artillery / Air Defense / High Value
-    4: QColor("#B388FF"),  # Soft Violet  - Aircraft / UAV
-    5: QColor("#FF9100"),  # Amber Orange - Infrastructure / Building
-    6: QColor("#76FF03"),  # Lime Green   - Secondary target
-    7: QColor("#E040FB"),  # Bright Pink  - Unclassified / Radar
+    0: QColor("#00E5FF"),  # Neon Cyan    - Plane
+    1: QColor("#00FF66"),  # Neon Green   - Ship
+    2: QColor("#FFD600"),  # Bright Gold  - Storage tank
+    3: QColor("#FF9100"),  # Amber Orange - Baseball diamond
+    4: QColor("#76FF03"),  # Lime Green   - Tennis court
+    5: QColor("#FF6E40"),  # Coral Red    - Basketball court
+    6: QColor("#00B0FF"),  # Vivid Blue   - Ground track field
+    7: QColor("#E040FB"),  # Bright Pink  - Harbor
+    8: QColor("#B388FF"),  # Soft Violet  - Bridge
+    9: QColor("#FF3366"),  # Neon Crimson - Large vehicle
+    10: QColor("#69F0AE"),  # Mint Green   - Small vehicle
+    11: QColor("#FFFF00"),  # Pure Yellow  - Helicopter
+    12: QColor("#FFAB00"),  # Amber Accent - Roundabout
+    13: QColor("#40C4FF"),  # Sky Blue     - Soccer ball field
+    14: QColor("#18FFFF"),  # Electric Cyan- Swimming pool
+    15: QColor("#EA80FC"),  # Light Pink   - Container crane
 }
 
 DEFAULT_CLASS_NAMES: Dict[int, str] = {
-    0: "Легкова техніка",
-    1: "Вантажний транспорт",
-    2: "Бронетехніка",
-    3: "Артилерія / ППО",
-    4: "Авіація / БПЛА",
-    5: "Інфраструктура",
+    0: "Літак (plane)",
+    1: "Судно / Корабель (ship)",
+    2: "Резервуар (storage tank)",
+    3: "Бейсбольне поле (baseball diamond)",
+    4: "Тенісний корт (tennis court)",
+    5: "Баскетбольний майданчик (basketball court)",
+    6: "Бігова доріжка / Стадіон (ground track field)",
+    7: "Гавань / Порт (harbor)",
+    8: "Міст (bridge)",
+    9: "Великогабаритний транспорт (large vehicle)",
+    10: "Малогабаритний транспорт (small vehicle)",
+    11: "Гелікоптер (helicopter)",
+    12: "Кільцева розв'язка (roundabout)",
+    13: "Футбольне поле (soccer ball field)",
+    14: "Басейн (swimming pool)",
+    15: "Портовий кран (container crane)",
 }
 
 
