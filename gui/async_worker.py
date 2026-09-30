@@ -223,7 +223,7 @@ class InferenceWorker(QThread):
         image_source: Union[str, Path, np.ndarray],
         altitude: float = 120.0,
         vram_mb: int = 2048,
-        conf_threshold: float = 0.25,
+        conf_threshold: float = 0.20,
         diou_threshold: float = 0.50,
         detector: Optional[UnifiedDetector] = None,
         is_mock: bool = False,

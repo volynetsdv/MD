@@ -310,20 +310,26 @@ def export_single_profile(
 
     logger.info(f"--- Exporting Profile: resolution={img_size}x{img_size} ---")
 
-    # 1. Export ONNX (fixed batch=1, dynamic=False, opset=17)
-    logger.info(f"Exporting ONNX opset={opset}, dynamic=False, batch=1 -> {dest_onnx}")
+    # 1. Export ONNX (fixed batch=1, dynamic=False, opset=17, simplify=True)
+    logger.info(f"Exporting ONNX opset={opset}, dynamic=False, simplify=True, batch=1 -> {dest_onnx}")
+    export_dev = int(device) if str(device).isdigit() else device
     temp_onnx = model.export(
         format="onnx",
         imgsz=img_size,
         opset=opset,
         dynamic=False,
+        simplify=True,
         batch=1,
-        device=device,
+        device=export_dev,
     )
 
     temp_onnx_path = Path(temp_onnx)
     if temp_onnx_path.resolve() != dest_onnx.resolve():
-        shutil.move(str(temp_onnx_path), str(dest_onnx))
+        shutil.copy2(str(temp_onnx_path), str(dest_onnx))
+        try:
+            temp_onnx_path.unlink()
+        except Exception:
+            pass
 
     logger.info(f"Saved ONNX model ({dest_onnx.stat().st_size} bytes) -> {dest_onnx}")
 
@@ -343,29 +349,32 @@ def export_single_profile(
 
 def resolve_weights(weights: Optional[Union[str, Path]] = None) -> Union[str, Path]:
     """
-    Resolve weights file, automatically discovering trained best.pt or pretrained checkpoints.
+    Resolve weights file, prioritizing explicitly passed weights, then trained best.pt, then fallbacks.
     """
     repo_root = Path(__file__).resolve().parent.parent
     if weights:
         w_path = Path(weights)
         if w_path.exists():
-            return w_path
+            return w_path.resolve()
         cand = (repo_root / weights).resolve()
         if cand.exists():
             return cand
+        cwd_cand = (Path.cwd() / weights).resolve()
+        if cwd_cand.exists():
+            return cwd_cand
         return weights
 
-    # Auto-detection sequence: search standard training output directories
-    candidates = [
-        repo_root / "runs" / "train" / "aerial_yolo_train" / "weights" / "best.pt",
-        Path("runs/train/aerial_yolo_train/weights/best.pt"),
-    ]
+    # Auto-detection sequence: search latest best.pt across runs/
+    candidates: List[Path] = []
     runs_dir = repo_root / "runs"
     if runs_dir.exists():
         found = sorted(runs_dir.glob("**/weights/best.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
         candidates.extend(found)
 
     candidates.extend([
+        repo_root / "runs" / "detect" / "runs" / "train" / "aerial_yolo_train-2" / "weights" / "best.pt",
+        repo_root / "runs" / "train" / "aerial_yolo_train" / "weights" / "best.pt",
+        Path("runs/train/aerial_yolo_train/weights/best.pt"),
         repo_root / "yolo11s.pt",
         Path("yolo11s.pt"),
     ])
@@ -373,7 +382,7 @@ def resolve_weights(weights: Optional[Union[str, Path]] = None) -> Union[str, Pa
     for cand in candidates:
         if cand.exists():
             logger.info(f"Auto-resolved base model weights to: '{cand}'")
-            return cand
+            return cand.resolve()
 
     return "yolo11s.pt"
 
@@ -387,7 +396,7 @@ def export_all_profiles(
     calib_dir: Optional[Union[str, Path]] = None,
     workspace_mb: int = 2048,
     opset: int = 17,
-    device: Optional[str] = None,
+    device: Optional[Union[str, int]] = None,
 ) -> Dict[int, Dict[str, Path]]:
     """
     Export all four model resolutions [320, 416, 512, 640] to ONNX and TensorRT.
@@ -410,8 +419,8 @@ def export_all_profiles(
         Workspace size in MB.
     opset : int
         ONNX opset version.
-    device : Optional[str]
-        Device to use ('cpu', '0'/'cuda', or 'auto').
+    device : Optional[Union[str, int]]
+        Device to use ('cpu', '0'/'cuda', 0, or 'auto').
 
     Returns
     -------
@@ -425,7 +434,7 @@ def export_all_profiles(
     weights_path = Path(target_weights) if isinstance(target_weights, (str, Path)) else None
 
     # Load model instance
-    logger.info(f"Loading base YOLO model from '{target_weights}'...")
+    logger.info(f"Loading YOLO model from '{target_weights}'...")
     if weights_path and weights_path.exists():
         model = YOLO(str(weights_path))
     else:
@@ -442,8 +451,24 @@ def export_all_profiles(
                 )
                 model = YOLO("yolo11n.yaml")
 
+    # Validate classes count
+    num_classes = len(model.names) if hasattr(model, "names") and model.names else 0
+    logger.info(f"Loaded YOLO model with {num_classes} classes: {model.names}")
+    if num_classes == 80:
+        logger.warning(
+            "⚠️ WARNING: Loaded model has 80 classes (Standard COCO)! "
+            "For DOTA 1.5 dataset, 16 classes are expected. "
+            "Output tensor will have shape [1, 84, N] instead of [1, 20, N]!"
+        )
+    elif num_classes != 16:
+        logger.warning(
+            f"⚠️ WARNING: Expected 16 classes for DOTA 1.5, but model has {num_classes} classes!"
+        )
+    else:
+        logger.info(f"✅ Verified: Model configured with exactly 16 DOTA 1.5 classes.")
+
     if device is None or str(device).lower() == "auto":
-        device = "0" if torch.cuda.is_available() else "cpu"
+        device = 0 if torch.cuda.is_available() else "cpu"
 
     results: Dict[int, Dict[str, Path]] = {}
     for sz in sizes:
@@ -476,7 +501,7 @@ def parse_arguments() -> argparse.Namespace:
         "-w",
         type=str,
         default=None,
-        help="Path to base PyTorch weights (.pt) or architecture definition (default: auto-detected from runs/train/**/best.pt or yolo11s.pt)",
+        help="Path to base PyTorch weights (.pt) or architecture definition (default: auto-detected from runs/**/best.pt)",
     )
     parser.add_argument(
         "--output-dir",
@@ -518,8 +543,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="auto",
-        help="Execution device for ONNX export (default: auto)",
+        default="0" if torch.cuda.is_available() else "cpu",
+        help="Execution device for ONNX export (default: 0 if CUDA available else cpu)",
     )
     return parser.parse_args()
 

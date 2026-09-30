@@ -308,6 +308,9 @@ class CanvasViewer(QGraphicsView):
         # Apply current active filters
         self._apply_filters()
         self._emit_visible_count()
+        self._scene.update()
+        if self.viewport():
+            self.viewport().update()
 
     def _parse_coordinates(self, det: Dict[str, Any]) -> Optional[QRectF]:
         """Extract absolute pixel coordinates from detection dictionary."""
@@ -471,6 +474,9 @@ class CanvasViewer(QGraphicsView):
                 item.class_id in self._visible_classes
             )
             item.set_visible(visible)
+        self._scene.update()
+        if self.viewport():
+            self.viewport().update()
 
     def _emit_visible_count(self) -> None:
         """Emit count of currently visible detections."""

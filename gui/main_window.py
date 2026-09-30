@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -36,6 +37,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -209,8 +212,8 @@ QSlider::handle:horizontal {
     border-radius: 7px;
 }
 
-/* Target List Table */
-QTableWidget {
+/* Target List Table & File List */
+QTableWidget, QListWidget {
     background-color: #0f172a;
     border: 1px solid #24344d;
     border-radius: 4px;
@@ -218,6 +221,20 @@ QTableWidget {
     color: #f1f5f9;
     selection-background-color: #1e3a5f;
     selection-color: #38bdf8;
+}
+
+QListWidget::item {
+    padding: 3px 6px;
+    border-bottom: 1px solid #162032;
+}
+
+QListWidget::item:hover {
+    background-color: #1e293b;
+}
+
+QListWidget::item:selected {
+    background-color: #0284c7;
+    color: #ffffff;
 }
 
 QHeaderView::section {
@@ -403,20 +420,36 @@ class MainWindow(QMainWindow):
         # 1. Header and Input Section
         grp_input = QGroupBox("Вхідні дані", sidebar)
         layout_input = QVBoxLayout(grp_input)
-        layout_input.setSpacing(8)
+        layout_input.setSpacing(6)
 
         btn_layout = QHBoxLayout()
-        self.btn_open = QPushButton("📁 Відкрити фото", grp_input)
+        self.btn_open = QPushButton("📁 Фото", grp_input)
         self.btn_open.setToolTip("Відкрити аерофотознімок з диска (Ctrl+O)")
         self.btn_open.clicked.connect(self._on_open_image_dialog)
 
-        self.btn_load_mock_8k = QPushButton("⚡ Тест 8K", grp_input)
+        self.btn_open_folder = QPushButton("📂 Папка", grp_input)
+        self.btn_open_folder.setToolTip("Обрати папку з аерофотознімками для пакетного перегляду")
+        self.btn_open_folder.clicked.connect(self._on_open_folder_dialog)
+
+        self.btn_load_mock_8k = QPushButton("⚡ 8K Тест", grp_input)
         self.btn_load_mock_8k.setToolTip("Згенерувати тестовий кадр 8K (7680×4320)")
         self.btn_load_mock_8k.clicked.connect(self.load_mock_8k_image)
 
-        btn_layout.addWidget(self.btn_open, stretch=2)
-        btn_layout.addWidget(self.btn_load_mock_8k, stretch=1)
+        btn_layout.addWidget(self.btn_open)
+        btn_layout.addWidget(self.btn_open_folder)
+        btn_layout.addWidget(self.btn_load_mock_8k)
         layout_input.addLayout(btn_layout)
+
+        # File List for Batch/Folder Navigation
+        lbl_list = QLabel("Знімки у робочій папці:", grp_input)
+        lbl_list.setStyleSheet("color: #94a3b8; font-size: 11px; margin-top: 2px;")
+        layout_input.addWidget(lbl_list)
+
+        self.list_files = QListWidget(grp_input)
+        self.list_files.setMaximumHeight(90)
+        self.list_files.setToolTip("Оберіть файл зі списку для завантаження на полотно")
+        self.list_files.currentItemChanged.connect(self._on_file_item_changed)
+        layout_input.addWidget(self.list_files)
 
         self.lbl_image_info = QLabel("Файл: не вибрано\nРоздільність: 0 × 0 px", grp_input)
         self.lbl_image_info.setStyleSheet("color: #94a3b8; font-size: 11px;")
@@ -484,7 +517,7 @@ class MainWindow(QMainWindow):
         # Confidence Slider
         slider_row = QHBoxLayout()
         lbl_conf_title = QLabel("Мін. впевненість:", grp_filter)
-        self.lbl_conf_val = QLabel("25%", grp_filter)
+        self.lbl_conf_val = QLabel("20%", grp_filter)
         self.lbl_conf_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         slider_row.addWidget(lbl_conf_title)
         slider_row.addStretch()
@@ -493,7 +526,7 @@ class MainWindow(QMainWindow):
 
         self.slider_conf = QSlider(Qt.Orientation.Horizontal, grp_filter)
         self.slider_conf.setRange(0, 100)
-        self.slider_conf.setValue(25)
+        self.slider_conf.setValue(20)
         self.slider_conf.valueChanged.connect(self._on_confidence_slider_changed)
         layout_filter.addWidget(self.slider_conf)
 
@@ -597,6 +630,58 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             self.load_image_file(file_path)
+            # Sync with file list
+            p = Path(file_path)
+            self.list_files.blockSignals(True)
+            self.list_files.clear()
+            item = QListWidgetItem(p.name)
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
+            self.list_files.addItem(item)
+            self.list_files.setCurrentRow(0)
+            self.list_files.blockSignals(False)
+
+    def _on_open_folder_dialog(self) -> None:
+        """Open directory picker to select a folder containing aerial images."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Обрати папку з аерофотознімками",
+            "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if folder_path:
+            self.load_image_folder(folder_path)
+
+    def load_image_folder(self, folder_path: str) -> None:
+        """Scan folder for aerial images and populate the file list."""
+        valid_exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+        p = Path(folder_path)
+        if not p.exists() or not p.is_dir():
+            return
+
+        files = [f for f in sorted(p.iterdir()) if f.is_file() and f.suffix.lower() in valid_exts]
+        self.list_files.blockSignals(True)
+        self.list_files.clear()
+        for f in files:
+            item = QListWidgetItem(f.name)
+            item.setData(Qt.ItemDataRole.UserRole, str(f))
+            self.list_files.addItem(item)
+        self.list_files.blockSignals(False)
+
+        if files:
+            self.list_files.setCurrentRow(0)
+            self.load_image_file(str(files[0]))
+            self.status_bar.showMessage(f"Завантажено папку: {len(files)} зображень", 4000)
+        else:
+            self.status_bar.showMessage("У вибраній папці не знайдено підтримуваних зображень", 4000)
+
+    def _on_file_item_changed(
+        self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem]
+    ) -> None:
+        """Handle selection change in the files list."""
+        if current:
+            fpath = current.data(Qt.ItemDataRole.UserRole)
+            if fpath and fpath != self._current_image_path:
+                self.load_image_file(fpath)
 
     def load_image_file(self, file_path: str) -> bool:
         """Load image file and prepare workspace."""
@@ -607,10 +692,10 @@ class MainWindow(QMainWindow):
             self._is_mock_image = False
             w, h = self.canvas.get_image_size()
             self.lbl_image_info.setText(
-                f"Файл: {file_path.split('/')[-1]}\nРоздільність: {w} × {h} px"
+                f"Файл: {Path(file_path).name}\nРоздільність: {w} × {h} px"
             )
             self.btn_detect.setEnabled(True)
-            self.status_bar.showMessage(f"Завантажено: {file_path} ({w}×{h})", 4000)
+            self.status_bar.showMessage(f"Завантажено: {Path(file_path).name} ({w}×{h})", 4000)
             self.table_targets.setRowCount(0)
         else:
             QMessageBox.critical(self, "Помилка", f"Не вдалося відкрити файл:\n{file_path}")

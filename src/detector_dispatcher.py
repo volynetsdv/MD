@@ -485,7 +485,7 @@ class UnifiedDetector:
         self,
         tile_tensor_or_numpy: Any,
         tile_size: Optional[int] = None,
-        conf_threshold: float = 0.25,
+        conf_threshold: float = 0.20,
         iou_threshold: float = 0.45,
     ) -> List[Detection]:
         """Run object detection on a single tile with identical cross-backend output.
@@ -609,15 +609,32 @@ class UnifiedDetector:
 
         Returns coordinates scaled back to the original tile dimensions.
         """
-        # Ensure shape is (1, 84, N)
-        if raw_output.ndim == 3 and raw_output.shape[2] == 84:
+        # Ensure raw_output is 3D (1, C, N) or (1, N, C)
+        if raw_output.ndim == 2:
+            raw_output = np.expand_dims(raw_output, axis=0)
+
+        if raw_output.ndim != 3:
+            logger.warning("Unexpected raw_output ndim: %s", getattr(raw_output, "ndim", None))
+            return []
+
+        # Ensure shape is (1, C, N) where C is channels (4 + num_classes)
+        # Standard YOLO output is (1, C, N) with C in [5, 200] and N anchors (e.g. 2100, 8400).
+        # If model outputs transposed (1, N, C), transpose to (1, C, N).
+        if raw_output.shape[1] >= 200 and raw_output.shape[2] < 200:
+            raw_output = np.transpose(raw_output, (0, 2, 1))
+        elif raw_output.shape[2] in (16, 20, 80, 84) and raw_output.shape[1] not in (16, 20, 80, 84):
             raw_output = np.transpose(raw_output, (0, 2, 1))
 
-        if raw_output.ndim != 3 or raw_output.shape[1] < 5:
+        if raw_output.shape[1] < 5:
+            logger.warning("Output tensor has fewer than 5 channels (4 coords + classes): %s", raw_output.shape)
             return []
 
         coords = raw_output[0, :4, :]  # (4, N) -> xc, yc, w, h
         class_scores = raw_output[0, 4:, :]  # (num_classes, N)
+
+        # Apply Sigmoid if logits are unnormalized (e.g. negative values or > 1.0)
+        if np.any(class_scores > 1.0) or np.any(class_scores < 0.0):
+            class_scores = 1.0 / (1.0 + np.exp(-np.clip(class_scores, -25.0, 25.0)))
 
         # Max class confidence for each candidate
         class_ids = np.argmax(class_scores, axis=0)  # (N,)
