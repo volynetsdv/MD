@@ -341,8 +341,45 @@ def export_single_profile(
     return dest_onnx, dest_engine
 
 
+def resolve_weights(weights: Optional[Union[str, Path]] = None) -> Union[str, Path]:
+    """
+    Resolve weights file, automatically discovering trained best.pt or pretrained checkpoints.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    if weights:
+        w_path = Path(weights)
+        if w_path.exists():
+            return w_path
+        cand = (repo_root / weights).resolve()
+        if cand.exists():
+            return cand
+        return weights
+
+    # Auto-detection sequence: search standard training output directories
+    candidates = [
+        repo_root / "runs" / "train" / "aerial_yolo_train" / "weights" / "best.pt",
+        Path("runs/train/aerial_yolo_train/weights/best.pt"),
+    ]
+    runs_dir = repo_root / "runs"
+    if runs_dir.exists():
+        found = sorted(runs_dir.glob("**/weights/best.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates.extend(found)
+
+    candidates.extend([
+        repo_root / "yolo11s.pt",
+        Path("yolo11s.pt"),
+    ])
+
+    for cand in candidates:
+        if cand.exists():
+            logger.info(f"Auto-resolved base model weights to: '{cand}'")
+            return cand
+
+    return "yolo11s.pt"
+
+
 def export_all_profiles(
-    weights: Union[str, Path],
+    weights: Optional[Union[str, Path]] = None,
     output_dir: Union[str, Path] = "models",
     sizes: Tuple[int, ...] = GRID_RESOLUTIONS,
     fp16: bool = True,
@@ -357,8 +394,8 @@ def export_all_profiles(
 
     Parameters
     ----------
-    weights : Union[str, Path]
-        Path to base PyTorch weights (.pt) or architecture config.
+    weights : Optional[Union[str, Path]]
+        Path to base PyTorch weights (.pt) or architecture config. If None, auto-detected.
     output_dir : Union[str, Path]
         Target directory to save artifacts.
     sizes : Tuple[int, ...]
@@ -374,7 +411,7 @@ def export_all_profiles(
     opset : int
         ONNX opset version.
     device : Optional[str]
-        Device to use ('cpu' or '0'/'cuda').
+        Device to use ('cpu', '0'/'cuda', or 'auto').
 
     Returns
     -------
@@ -384,15 +421,15 @@ def export_all_profiles(
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    weights_path = Path(weights) if weights else None
+    target_weights = resolve_weights(weights)
+    weights_path = Path(target_weights) if isinstance(target_weights, (str, Path)) else None
 
     # Load model instance
-    logger.info(f"Loading base YOLO model from '{weights}'...")
+    logger.info(f"Loading base YOLO model from '{target_weights}'...")
     if weights_path and weights_path.exists():
         model = YOLO(str(weights_path))
     else:
-        # If specific weights file doesn't exist, check if name corresponds to known yaml
-        name_str = str(weights)
+        name_str = str(target_weights)
         if name_str.endswith(".yaml"):
             model = YOLO(name_str)
         else:
@@ -400,13 +437,13 @@ def export_all_profiles(
                 model = YOLO(name_str)
             except Exception as e:
                 logger.warning(
-                    f"Could not load weights '{weights}' directly: {e}. "
+                    f"Could not load weights '{target_weights}' directly: {e}. "
                     "Falling back to default 'yolo11n.yaml' architecture."
                 )
                 model = YOLO("yolo11n.yaml")
 
-    if device is None:
-        device = "cpu"
+    if device is None or str(device).lower() == "auto":
+        device = "0" if torch.cuda.is_available() else "cpu"
 
     results: Dict[int, Dict[str, Path]] = {}
     for sz in sizes:
@@ -436,12 +473,14 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--weights",
+        "-w",
         type=str,
-        required=True,
-        help="Path to base PyTorch weights (.pt) or architecture definition",
+        default=None,
+        help="Path to base PyTorch weights (.pt) or architecture definition (default: auto-detected from runs/train/**/best.pt or yolo11s.pt)",
     )
     parser.add_argument(
         "--output-dir",
+        "-o",
         type=str,
         default="models",
         help="Directory to save exported .onnx and .engine files (default: models/)",
@@ -479,8 +518,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
-        help="Execution device for ONNX export (default: cpu)",
+        default="auto",
+        help="Execution device for ONNX export (default: auto)",
     )
     return parser.parse_args()
 

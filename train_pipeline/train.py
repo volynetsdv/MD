@@ -95,7 +95,7 @@ def calculate_safe_batch_size(
 
 
 def run_train(
-    data_dir: Union[str, Path],
+    data_dir: Optional[Union[str, Path]] = None,
     model: str = "yolo11s.pt",
     epochs: int = 50,
     batch: Union[str, int] = "auto",
@@ -113,8 +113,9 @@ def run_train(
 
     Parameters
     ----------
-    data_dir : Union[str, Path]
+    data_dir : Optional[Union[str, Path]]
         Path to sliced dataset folder containing dataset.yaml and slicing_meta.json.
+        If None, automatically discovered from standard locations (data/sliced_dota).
     model : str
         Base pretrained model or yaml config (default: yolo11s.pt).
     epochs : int
@@ -143,12 +144,44 @@ def run_train(
     Dict[str, Any]
         Dictionary with status, config, and training outputs.
     """
-    data_path = Path(data_dir).resolve()
+    if data_dir is None:
+        repo_root = Path(__file__).resolve().parent.parent
+        candidates = [
+            repo_root / "data" / "sliced_dota",
+            Path("data/sliced_dota"),
+            repo_root / "data" / "dota_sliced.yaml",
+            Path("data/dota_sliced.yaml"),
+        ]
+        found_candidate = None
+        for cand in candidates:
+            if cand.exists():
+                found_candidate = cand
+                break
+        if found_candidate is None:
+            raise FileNotFoundError(
+                "No dataset directory specified and auto-discovery found no sliced dataset. "
+                "Please specify --data-dir (e.g. data/sliced_dota)."
+            )
+        data_path = found_candidate.resolve()
+        logger.info(f"Auto-resolved dataset configuration from '{data_path}'.")
+    else:
+        data_path = Path(data_dir).resolve()
+
     if not data_path.exists():
         raise FileNotFoundError(f"Dataset directory '{data_path}' does not exist.")
 
-    yaml_file = data_path / "dataset.yaml"
-    meta_file = data_path / "slicing_meta.json"
+    if data_path.is_file() and data_path.suffix.lower() in (".yaml", ".yml"):
+        yaml_file = data_path
+        meta_candidates = [
+            yaml_file.parent / "slicing_meta.json",
+            yaml_file.parent / "sliced_dota" / "slicing_meta.json",
+        ]
+        meta_file = next((m for m in meta_candidates if m.exists()), yaml_file.parent / "slicing_meta.json")
+    else:
+        yaml_file = data_path / "dataset.yaml"
+        if not yaml_file.exists() and (data_path / "dota_sliced.yaml").exists():
+            yaml_file = data_path / "dota_sliced.yaml"
+        meta_file = data_path / "slicing_meta.json"
 
     if not yaml_file.exists():
         raise FileNotFoundError(
@@ -244,10 +277,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--data-dir",
+        "--data",
         "-d",
         type=str,
-        required=True,
-        help="Path to sliced dataset directory containing dataset.yaml and slicing_meta.json",
+        default=None,
+        help="Path to sliced dataset directory containing dataset.yaml and slicing_meta.json "
+        "(default: auto-detected from data/sliced_dota or data/dota_sliced.yaml)",
     )
     parser.add_argument(
         "--model",
