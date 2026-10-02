@@ -1,0 +1,19 @@
+{
+    "default_confidence": 0.2,
+    "default_iou": 0.45,
+    "default_altitude": 150.0,
+    "default_vram_limit_mb": 2048,
+    "show_class_ids_only": true,
+    "scale_overlay_text_with_zoom": true,
+    "base_font_size": 12,
+    "box_border_width": 2,
+    "window_geometry": "01d9d0cb0003000000000000000000000000077f00000487000000f00000008e0000068f000004110000000002000000078000000000000000180000077f00000487",
+    "splitter_sizes": [
+        324,
+        1228,
+        364
+    ],
+    "splitter_state": "000000ff000000010000000300000144000004cc0000016c01ffffffff010000000100",
+    "models_dir": "models",
+    "recent_dir": "data/sliced_dota/images/val"
+}

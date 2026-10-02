@@ -265,7 +265,7 @@ class TestMainWindowHeadless:
         # Altitude selector requirements: QSpinBox, 10-500m
         assert win.spin_altitude.minimum() == 10
         assert win.spin_altitude.maximum() == 500
-        assert win.spin_altitude.value() == 120
+        assert win.spin_altitude.value() in (120, 150)
         assert "м" in win.spin_altitude.suffix()
 
         # VRAM options

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QAction,
     QBrush,
     QColor,
     QFont,
@@ -31,6 +32,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QWidget,
 )
+
+from core.config_manager import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +98,7 @@ class DetectionItem:
         class_id: int,
         confidence: float,
         rect: QRectF,
+        class_name: str = "",
     ) -> None:
         self.raw_data = raw_data
         self.rect_item = rect_item
@@ -103,6 +107,7 @@ class DetectionItem:
         self.class_id = class_id
         self.confidence = confidence
         self.rect = rect
+        self.class_name = class_name
 
     def set_visible(self, visible: bool) -> None:
         """Toggle visibility for all vector primitives of this detection."""
@@ -129,6 +134,8 @@ class CanvasViewer(QGraphicsView):
         - Smooth cursor-centered wheel zoom with scale limits (0.02x to 50x).
         - Smooth pan via middle mouse button or left mouse drag.
         - Dynamic filtering by minimum confidence and class visibility.
+        - Adaptive label rendering: full tactical names or compact #ID format.
+        - Fixed screen-space font scaling via ItemIgnoresTransformations flag.
     """
 
     # Signals
@@ -136,6 +143,8 @@ class CanvasViewer(QGraphicsView):
     cursor_position_changed = Signal(int, int)  # scene (x, y) pixel coordinates
     detection_selected = Signal(dict)  # emitted when a detection box is clicked
     detections_updated = Signal(int)  # total visible detections count
+    show_class_ids_only_changed = Signal(bool)
+    scale_text_with_zoom_changed = Signal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -155,6 +164,26 @@ class CanvasViewer(QGraphicsView):
         self._min_confidence: float = 0.0
         self._visible_classes: Set[int] = set(range(100))  # all visible by default
         self._class_names: Dict[int, str] = dict(DEFAULT_CLASS_NAMES)
+
+        # Overlay visual parameters (loaded from AppConfig)
+        cfg = get_config()
+        self._show_class_ids_only: bool = getattr(cfg, "show_class_ids_only", False)
+        self._scale_text_with_zoom: bool = getattr(cfg, "scale_overlay_text_with_zoom", True)
+        self._base_font_size: int = getattr(cfg, "base_font_size", 10)
+        self._box_border_width: int = getattr(cfg, "box_border_width", 2)
+
+        # QActions for UI / toolbar binding
+        self.action_show_class_ids_only = QAction("Показувати лише ID класів", self)
+        self.action_show_class_ids_only.setCheckable(True)
+        self.action_show_class_ids_only.setChecked(self._show_class_ids_only)
+        self.action_show_class_ids_only.setToolTip("Відображати ID класу замість назви")
+        self.action_show_class_ids_only.toggled.connect(self.set_show_class_ids_only)
+
+        self.action_scale_text_with_zoom = QAction("Масштабувати шрифт із зумом", self)
+        self.action_scale_text_with_zoom.setCheckable(True)
+        self.action_scale_text_with_zoom.setChecked(self._scale_text_with_zoom)
+        self.action_scale_text_with_zoom.setToolTip("Масштабувати шрифт разом із зумом")
+        self.action_scale_text_with_zoom.toggled.connect(self.set_scale_text_with_zoom)
 
         # Navigation state
         self._current_zoom: float = 1.0
@@ -336,6 +365,115 @@ class CanvasViewer(QGraphicsView):
             logger.warning("Invalid coordinate values in detection: %s (%s)", det, err)
             return None
 
+    def _format_label_text(self, class_id: int, class_name: str, conf: float) -> str:
+        """Format badge text depending on compact ID mode."""
+        if self._show_class_ids_only:
+            return f"#{class_id:02d} | {conf:.1%}"
+        return f"{class_name} {conf:.1%}"
+
+    def _update_detection_item_visuals(self, item: DetectionItem) -> None:
+        """Refresh typography, badge geometry, and transform flags for a single detection."""
+        # 1. Typography & text
+        label_text = self._format_label_text(item.class_id, item.class_name, item.confidence)
+        item.text_item.setText(label_text)
+        font = QFont("SansSerif", self._base_font_size, QFont.Weight.Bold)
+        item.text_item.setFont(font)
+
+        # 2. Transform flags (ItemIgnoresTransformations)
+        ignore_transform = not self._scale_text_with_zoom
+        item.text_item.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, ignore_transform
+        )
+        item.badge_bg.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, ignore_transform
+        )
+
+        # 3. Badge background size and position
+        text_rect = item.text_item.boundingRect()
+        badge_padding_x = 4.0
+        badge_padding_y = 2.0
+        badge_w = text_rect.width() + (badge_padding_x * 2.0)
+        badge_h = text_rect.height() + (badge_padding_y * 2.0)
+
+        badge_x = item.rect.x()
+        badge_y = item.rect.y() - badge_h
+        if badge_y < 0:
+            badge_y = item.rect.y()
+
+        item.badge_bg.setRect(QRectF(0.0, 0.0, badge_w, badge_h))
+        item.badge_bg.setPos(badge_x, badge_y)
+        item.text_item.setPos(badge_x + badge_padding_x, badge_y + badge_padding_y)
+
+        # 4. Box pen width
+        color = get_class_color(item.class_id)
+        box_pen = QPen(color, float(self._box_border_width))
+        box_pen.setCosmetic(True)
+        item.rect_item.setPen(box_pen)
+
+    def set_show_class_ids_only(self, show_ids: bool) -> None:
+        """Toggle displaying compact class ID index instead of full text name."""
+        self._show_class_ids_only = bool(show_ids)
+        if self.action_show_class_ids_only.isChecked() != self._show_class_ids_only:
+            self.action_show_class_ids_only.blockSignals(True)
+            self.action_show_class_ids_only.setChecked(self._show_class_ids_only)
+            self.action_show_class_ids_only.blockSignals(False)
+
+        for item in self._detection_items:
+            self._update_detection_item_visuals(item)
+
+        self.show_class_ids_only_changed.emit(self._show_class_ids_only)
+        self._scene.update()
+        if self.viewport():
+            self.viewport().update()
+
+    def is_show_class_ids_only(self) -> bool:
+        """Return True if compact ID mode is currently active."""
+        return self._show_class_ids_only
+
+    def set_scale_text_with_zoom(self, scale_with_zoom: bool) -> None:
+        """Toggle whether label text scales with view zoom or maintains fixed screen-space size."""
+        self._scale_text_with_zoom = bool(scale_with_zoom)
+        if self.action_scale_text_with_zoom.isChecked() != self._scale_text_with_zoom:
+            self.action_scale_text_with_zoom.blockSignals(True)
+            self.action_scale_text_with_zoom.setChecked(self._scale_text_with_zoom)
+            self.action_scale_text_with_zoom.blockSignals(False)
+
+        for item in self._detection_items:
+            self._update_detection_item_visuals(item)
+
+        self.scale_text_with_zoom_changed.emit(self._scale_text_with_zoom)
+        self._scene.update()
+        if self.viewport():
+            self.viewport().update()
+
+    def is_scale_text_with_zoom(self) -> bool:
+        """Return True if overlay text scales together with zoom transformations."""
+        return self._scale_text_with_zoom
+
+    def set_base_font_size(self, size: int) -> None:
+        """Set base font point size for target badges."""
+        self._base_font_size = max(6, min(36, int(size)))
+        for item in self._detection_items:
+            self._update_detection_item_visuals(item)
+        self._scene.update()
+        if self.viewport():
+            self.viewport().update()
+
+    def get_base_font_size(self) -> int:
+        return self._base_font_size
+
+    def set_box_border_width(self, width: int) -> None:
+        """Set cosmetic border line width in pixels for target bounding boxes."""
+        self._box_border_width = max(1, min(10, int(width)))
+        for item in self._detection_items:
+            self._update_detection_item_visuals(item)
+        self._scene.update()
+        if self.viewport():
+            self.viewport().update()
+
+    def get_box_border_width(self) -> int:
+        return self._box_border_width
+
     def _create_detection_primitive(self, det: Dict[str, Any]) -> Optional[DetectionItem]:
         """Construct QGraphicsRectItem and QGraphicsSimpleTextItem for a detection."""
         rect = self._parse_coordinates(det)
@@ -350,7 +488,7 @@ class CanvasViewer(QGraphicsView):
 
         # 1. Bounding box rectangle: cosmetic pen preserves crispness at any zoom level
         rect_item = QGraphicsRectItem(rect)
-        pen = QPen(color, 2.0)
+        pen = QPen(color, float(self._box_border_width))
         pen.setCosmetic(True)  # Keeps line width constant on screen regardless of zoom
         rect_item.setPen(pen)
 
@@ -368,13 +506,19 @@ class CanvasViewer(QGraphicsView):
         rect_item.setToolTip(tooltip_text)
 
         # 2. Text label and contrast background pill for readability over any terrain
-        label_text = f"{class_name} {conf:.1%}"
-        font = QFont("SansSerif", 10, QFont.Weight.Bold)
+        label_text = self._format_label_text(class_id, class_name, conf)
+        font = QFont("SansSerif", self._base_font_size, QFont.Weight.Bold)
 
         text_item = QGraphicsSimpleTextItem(label_text)
         text_item.setFont(font)
         text_item.setBrush(QBrush(Qt.GlobalColor.white))
         text_item.setZValue(12.0)
+
+        ignore_transform = not self._scale_text_with_zoom
+        if ignore_transform:
+            text_item.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+            )
 
         # Text bounding dimensions
         text_rect = text_item.boundingRect()
@@ -389,8 +533,12 @@ class CanvasViewer(QGraphicsView):
         if badge_y < 0:
             badge_y = rect.y()
 
-        badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
-        badge_bg = QGraphicsRectItem(badge_rect)
+        badge_bg = QGraphicsRectItem(QRectF(0.0, 0.0, badge_w, badge_h))
+        badge_bg.setPos(badge_x, badge_y)
+        if ignore_transform:
+            badge_bg.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+            )
 
         # Dark high-contrast background with colored accent border
         bg_color = QColor(15, 23, 42, 220)  # semi-opaque dark slate
@@ -416,6 +564,7 @@ class CanvasViewer(QGraphicsView):
             class_id=class_id,
             confidence=conf,
             rect=rect,
+            class_name=class_name,
         )
 
     def clear_detections(self) -> None:

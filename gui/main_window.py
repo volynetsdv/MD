@@ -15,9 +15,10 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QByteArray, QPoint, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
+    QCloseEvent,
     QColor,
     QFont,
     QIcon,
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -57,17 +59,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.config_manager import AppConfig, get_config
 from gui.async_worker import InferenceWorker
 from gui.canvas_viewer import (
     DEFAULT_CLASS_NAMES,
     CanvasViewer,
     get_class_color,
 )
+from gui.settings_dialog import SettingsDialog
+from gui.styles import DARK_TACTICAL_STYLE
 
 logger = logging.getLogger(__name__)
 
-# Dark Tactical Operator Workstation Theme QSS
-DARK_TACTICAL_STYLE = """
+# Old inline QSS preserved as reference comment
+"""
 QMainWindow {
     background-color: #0b0f19;
     color: #e2e8f0;
@@ -263,15 +268,42 @@ QProgressBar::chunk {
     border-radius: 3px;
 }
 
-/* Status Bar */
-QStatusBar {
-    background-color: #0f172a;
-    border-top: 1px solid #1e293b;
-    color: #94a3b8;
+/* Splitter */
+QSplitter::handle {
+    background-color: #1e293b;
+    width: 3px;
+    height: 3px;
 }
 
-QStatusBar::item {
+QSplitter::handle:hover {
+    background-color: #0284c7;
+}
+
+/* Scroll Area & Bars */
+QScrollArea {
+    background-color: transparent;
     border: none;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background: #0f172a;
+    width: 6px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #334155;
+    min-height: 20px;
+    border-radius: 3px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #38bdf8;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
 }
 """
 
@@ -379,46 +411,171 @@ class MainWindow(QMainWindow):
         self._worker: Optional[InferenceWorker] = None
         self._class_checkboxes: Dict[int, QCheckBox] = {}
 
+        self.cfg = get_config()
+
         self._init_ui()
+        self._init_menus_and_toolbars()
         self._init_signals()
         self._update_status_bar_info()
+
+        # Restore saved window geometry if available
+        if self.cfg.window_geometry:
+            try:
+                self.restoreGeometry(
+                    QByteArray.fromHex(self.cfg.window_geometry.encode("ascii"))
+                )
+            except Exception:
+                pass
 
     # --------------------------------------------------------------------------
     # UI Setup
     # --------------------------------------------------------------------------
     def _init_ui(self) -> None:
-        """Construct ergonomic layout with central canvas, left sidebar, and status bar."""
+        """Construct ergonomic layout with central canvas, left and right panels via QSplitter."""
         # Central Canvas View
         self.canvas = CanvasViewer(self)
 
-        # Side Control Panel
-        sidebar_widget = self._create_sidebar()
+        # Left panel: Input data and flight/hardware parameters
+        left_panel = self._create_left_panel()
 
-        # Splitter to allow resizing sidebar
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.addWidget(sidebar_widget)
-        splitter.addWidget(self.canvas)
-        splitter.setStretchFactor(0, 0)  # Sidebar fixed size
-        splitter.setStretchFactor(1, 1)  # Canvas expands
-        splitter.setSizes([380, 1060])
+        # Right panel: Tactical filters and target list
+        right_panel = self._create_right_panel()
 
-        self.setCentralWidget(splitter)
+        # Horizontal Splitter: Left Panel | Central Canvas | Right Panel
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter.addWidget(left_panel)
+        self.splitter.addWidget(self.canvas)
+        self.splitter.addWidget(right_panel)
+
+        self.splitter.setStretchFactor(0, 0)  # Left panel: fixed default width
+        self.splitter.setStretchFactor(1, 1)  # Canvas: expands to fill window
+        self.splitter.setStretchFactor(2, 0)  # Right panel: fixed default width
+
+        if self.cfg.splitter_state:
+            try:
+                self.splitter.restoreState(
+                    QByteArray.fromHex(self.cfg.splitter_state.encode("ascii"))
+                )
+            except Exception:
+                sizes = (
+                    self.cfg.splitter_sizes
+                    if len(self.cfg.splitter_sizes) == 3
+                    else [300, 900, 300]
+                )
+                self.splitter.setSizes(sizes)
+        elif self.cfg.splitter_sizes and len(self.cfg.splitter_sizes) == 3:
+            self.splitter.setSizes(self.cfg.splitter_sizes)
+        else:
+            self.splitter.setSizes([300, 900, 300])
+
+        self.setCentralWidget(self.splitter)
 
         # Bottom Status Bar
         self._init_status_bar()
 
-    def _create_sidebar(self) -> QWidget:
-        """Create scrollable ergonomic side panel with controls and target list."""
-        sidebar = QWidget(self)
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(380)
+    def _init_menus_and_toolbars(self) -> None:
+        """Create tactical top menu bar and quick access toolbar."""
+        menu_bar = self.menuBar()
 
-        main_layout = QVBoxLayout(sidebar)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        # 1. File Menu
+        menu_file = menu_bar.addMenu("📁 Файл")
+
+        act_open_file = QAction("Відкрити знімок...", self)
+        act_open_file.setShortcut(QKeySequence("Ctrl+O"))
+        act_open_file.triggered.connect(self._on_open_image_dialog)
+        menu_file.addAction(act_open_file)
+
+        act_open_folder = QAction("Обрати робочу папку...", self)
+        act_open_folder.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_open_folder.triggered.connect(self._on_open_folder_dialog)
+        menu_file.addAction(act_open_folder)
+
+        act_mock = QAction("Згенерувати 8K тест...", self)
+        act_mock.setShortcut(QKeySequence("Ctrl+T"))
+        act_mock.triggered.connect(self.load_mock_8k_image)
+        menu_file.addAction(act_mock)
+
+        menu_file.addSeparator()
+
+        act_exit = QAction("Вихід", self)
+        act_exit.setShortcut(QKeySequence("Ctrl+Q"))
+        act_exit.triggered.connect(self.close)
+        menu_file.addAction(act_exit)
+
+        # 2. View Menu
+        menu_view = menu_bar.addMenu("👁️ Вигляд")
+
+        act_fit = QAction("Вписати зображення", self)
+        act_fit.setShortcut(QKeySequence("Ctrl+0"))
+        act_fit.triggered.connect(self.canvas.fit_to_view)
+        menu_view.addAction(act_fit)
+
+        act_100 = QAction("Масштаб 100%", self)
+        act_100.setShortcut(QKeySequence("Ctrl+1"))
+        act_100.triggered.connect(self.canvas.reset_zoom)
+        menu_view.addAction(act_100)
+
+        menu_view.addSeparator()
+        menu_view.addAction(self.canvas.action_show_class_ids_only)
+        menu_view.addAction(self.canvas.action_scale_text_with_zoom)
+
+        # 3. Settings Menu
+        menu_settings = menu_bar.addMenu("⚙️ Налаштування")
+        act_settings = QAction("Параметри застосунку...", self)
+        act_settings.setShortcut(QKeySequence("Ctrl+,"))
+        act_settings.triggered.connect(self._open_settings_dialog)
+        menu_settings.addAction(act_settings)
+
+        # Main Toolbar: Canvas View Tools Only (strictly no duplicated input buttons)
+        self.toolbar = self.addToolBar("Інструменти перегляду")
+        self.toolbar.setMovable(False)
+        self.toolbar.addAction(self.canvas.action_scale_text_with_zoom)
+        self.toolbar.addAction(self.canvas.action_show_class_ids_only)
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(act_fit)
+        self.toolbar.addAction(act_100)
+
+    def _open_settings_dialog(self) -> None:
+        """Open application preferences dialog and apply changes."""
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            cfg = get_config()
+            self.canvas.set_show_class_ids_only(cfg.show_class_ids_only)
+            self.canvas.set_scale_text_with_zoom(cfg.scale_overlay_text_with_zoom)
+            self.canvas.set_base_font_size(cfg.base_font_size)
+            self.canvas.set_box_border_width(cfg.box_border_width)
+            self.spin_altitude.setValue(int(cfg.default_altitude))
+            self.slider_conf.setValue(int(cfg.default_confidence * 100))
+            self.status_bar.showMessage("Налаштування застосунку успішно оновлено", 3000)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Save layout geometry and splitter sizes upon window closure."""
+        try:
+            cfg = get_config()
+            cfg.window_geometry = self.saveGeometry().toHex().data().decode("ascii")
+            cfg.splitter_state = self.splitter.saveState().toHex().data().decode("ascii")
+            cfg.splitter_sizes = self.splitter.sizes()
+            cfg.save()
+        except Exception as err:
+            logger.warning("Error saving layout state on exit: %s", err)
+        super().closeEvent(event)
+
+    def _create_sidebar(self) -> QWidget:
+        """Backward-compatibility stub: returns left panel."""
+        return self._create_left_panel()
+
+    def _create_left_panel(self) -> QWidget:
+        """Create ergonomic left panel containing image inputs and flight/detection parameters."""
+        panel = QWidget(self)
+        panel.setObjectName("sidebar")
+        panel.setMinimumWidth(260)
+
+        main_layout = QVBoxLayout(panel)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
 
         # 1. Header and Input Section
-        grp_input = QGroupBox("Вхідні дані", sidebar)
+        grp_input = QGroupBox("Вхідні дані", panel)
         layout_input = QVBoxLayout(grp_input)
         layout_input.setSpacing(6)
 
@@ -440,13 +597,18 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_load_mock_8k)
         layout_input.addLayout(btn_layout)
 
+        # Convenient aliases for buttons
+        self.btn_open_file = self.btn_open
+        self.btn_test_8k = self.btn_load_mock_8k
+
         # File List for Batch/Folder Navigation
         lbl_list = QLabel("Знімки у робочій папці:", grp_input)
         lbl_list.setStyleSheet("color: #94a3b8; font-size: 11px; margin-top: 2px;")
         layout_input.addWidget(lbl_list)
 
         self.list_files = QListWidget(grp_input)
-        self.list_files.setMaximumHeight(90)
+        self.list_files.setMinimumHeight(100)
+        self.list_files.setMaximumHeight(200)
         self.list_files.setToolTip("Оберіть файл зі списку для завантаження на полотно")
         self.list_files.currentItemChanged.connect(self._on_file_item_changed)
         layout_input.addWidget(self.list_files)
@@ -458,7 +620,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(grp_input)
 
         # 2. Flight & Hardware Parameters Section
-        grp_params = QGroupBox("Параметри польоту та пам'яті", sidebar)
+        grp_params = QGroupBox("Параметри польоту та пам'яті", panel)
         layout_params = QGridLayout(grp_params)
         layout_params.setSpacing(8)
 
@@ -466,7 +628,7 @@ class MainWindow(QMainWindow):
         lbl_alt = QLabel("Висота польоту:", grp_params)
         self.spin_altitude = QSpinBox(grp_params)
         self.spin_altitude.setRange(10, 500)
-        self.spin_altitude.setValue(120)
+        self.spin_altitude.setValue(int(self.cfg.default_altitude))
         self.spin_altitude.setSingleStep(10)
         self.spin_altitude.setSuffix(" м")
         self.spin_altitude.setToolTip("Висота зйомки БПЛА (10 - 500 метрів)")
@@ -483,7 +645,13 @@ class MainWindow(QMainWindow):
         self.combo_vram.addItem("4096 MB (4 GB)", 4096)
         self.combo_vram.addItem("8192 MB (8 GB)", 8192)
         self.combo_vram.addItem("16384 MB (16 GB)", 16384)
-        self.combo_vram.setCurrentIndex(0)
+
+        selected_idx = 0
+        for i in range(1, self.combo_vram.count()):
+            if self.combo_vram.itemData(i) == self.cfg.default_vram_limit_mb:
+                selected_idx = i
+                break
+        self.combo_vram.setCurrentIndex(selected_idx)
         self.combo_vram.setToolTip("Обмеження пам'яті GPU для розрахунку сітки тайлів")
 
         layout_params.addWidget(lbl_vram, 1, 0)
@@ -508,16 +676,30 @@ class MainWindow(QMainWindow):
         layout_params.addLayout(detect_layout, 2, 0, 1, 2)
 
         main_layout.addWidget(grp_params)
+        main_layout.addStretch()
 
-        # 3. Filtering Section
-        grp_filter = QGroupBox("Фільтрація відображення", sidebar)
+        return panel
+
+    def _create_right_panel(self) -> QWidget:
+        """Create ergonomic right panel containing tactical filters and detected targets."""
+        panel = QWidget(self)
+        panel.setObjectName("sidebar")
+        panel.setMinimumWidth(280)
+
+        main_layout = QVBoxLayout(panel)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        # 1. Filtering Section
+        grp_filter = QGroupBox("Фільтрація відображення", panel)
         layout_filter = QVBoxLayout(grp_filter)
         layout_filter.setSpacing(6)
 
         # Confidence Slider
         slider_row = QHBoxLayout()
         lbl_conf_title = QLabel("Мін. впевненість:", grp_filter)
-        self.lbl_conf_val = QLabel("20%", grp_filter)
+        conf_pct = int(self.cfg.default_confidence * 100)
+        self.lbl_conf_val = QLabel(f"{conf_pct}%", grp_filter)
         self.lbl_conf_val.setStyleSheet("color: #38bdf8; font-weight: bold;")
         slider_row.addWidget(lbl_conf_title)
         slider_row.addStretch()
@@ -526,41 +708,113 @@ class MainWindow(QMainWindow):
 
         self.slider_conf = QSlider(Qt.Orientation.Horizontal, grp_filter)
         self.slider_conf.setRange(0, 100)
-        self.slider_conf.setValue(20)
+        self.slider_conf.setValue(conf_pct)
         self.slider_conf.valueChanged.connect(self._on_confidence_slider_changed)
         layout_filter.addWidget(self.slider_conf)
 
-        # Class Checkboxes
+        # Class Checkboxes header with Select All / Clear All
+        cls_header = QHBoxLayout()
         lbl_classes = QLabel("Видимі класи цілей:", grp_filter)
         lbl_classes.setStyleSheet("margin-top: 4px; font-weight: 600;")
-        layout_filter.addWidget(lbl_classes)
+        cls_header.addWidget(lbl_classes)
+        cls_header.addStretch()
+
+        btn_all = QPushButton("Всі", grp_filter)
+        btn_all.setFixedHeight(20)
+        btn_all.setStyleSheet("padding: 2px 8px; font-size: 11px;")
+        btn_all.clicked.connect(self._select_all_classes)
+        cls_header.addWidget(btn_all)
+
+        btn_none = QPushButton("Жодного", grp_filter)
+        btn_none.setFixedHeight(20)
+        btn_none.setStyleSheet("padding: 2px 8px; font-size: 11px;")
+        btn_none.clicked.connect(self._deselect_all_classes)
+        cls_header.addWidget(btn_none)
+        layout_filter.addLayout(cls_header)
+
+        # ScrollArea for the 16 DOTA classes
+        scroll_classes = QScrollArea(grp_filter)
+        scroll_classes.setObjectName("scroll_classes")
+        scroll_classes.setWidgetResizable(True)
+        scroll_classes.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_classes.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_classes.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_classes.setMinimumHeight(140)
+        scroll_classes.setMaximumHeight(260)
+        scroll_classes.setStyleSheet("background-color: #080f1e; border: 1px solid #1e3563; border-radius: 4px;")
+        if scroll_classes.viewport():
+            scroll_classes.viewport().setStyleSheet("background-color: #080f1e; border: none;")
+
+        scroll_content = QWidget()
+        scroll_content.setObjectName("scroll_classes_content")
+        scroll_content.setStyleSheet("background-color: #080f1e;")
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(4, 4, 4, 4)
+        scroll_layout.setSpacing(4)
 
         for class_id, class_name in DEFAULT_CLASS_NAMES.items():
             color = get_class_color(class_id)
-            chk = QCheckBox(f"{class_name}", grp_filter)
+            chk = QCheckBox(f"[{class_id:02d}] {class_name}", scroll_content)
             chk.setChecked(True)
             chk.setStyleSheet(
-                f"QCheckBox {{ color: {color.name()}; font-weight: 500; }}"
+                f"QCheckBox {{ "
+                f"    color: #e2e8f0; "
+                f"    font-weight: 500; "
+                f"    font-size: 12px; "
+                f"    spacing: 8px; "
+                f"    padding: 3px 6px; "
+                f"    border-radius: 3px; "
+                f"    background-color: transparent; "
+                f"}} "
+                f"QCheckBox:hover {{ "
+                f"    background-color: #0f1d3a; "
+                f"    color: #ffffff; "
+                f"}} "
+                f"QCheckBox::indicator {{ "
+                f"    width: 14px; "
+                f"    height: 14px; "
+                f"    border: 2px solid {color.name()}; "
+                f"    border-radius: 3px; "
+                f"    background-color: #080f1e; "
+                f"}} "
+                f"QCheckBox::indicator:hover {{ "
+                f"    border-color: #38bdf8; "
+                f"}} "
+                f"QCheckBox::indicator:checked {{ "
+                f"    background-color: {color.name()}; "
+                f"    border-color: {color.name()}; "
+                f"}}"
             )
             chk.toggled.connect(
                 lambda checked, cid=class_id: self.canvas.set_class_visibility(cid, checked)
             )
             self._class_checkboxes[class_id] = chk
-            layout_filter.addWidget(chk)
+            scroll_layout.addWidget(chk)
+
+        scroll_classes.setWidget(scroll_content)
+        layout_filter.addWidget(scroll_classes)
 
         main_layout.addWidget(grp_filter)
 
-        # 4. Target List Section
-        grp_targets = QGroupBox("Виявлені цілі", sidebar)
+        # 2. Target List Section
+        grp_targets = QGroupBox("Виявлені цілі", panel)
         layout_targets = QVBoxLayout(grp_targets)
         layout_targets.setContentsMargins(6, 12, 6, 6)
 
         self.table_targets = QTableWidget(0, 4, grp_targets)
         self.table_targets.setHorizontalHeaderLabels(["#", "Клас", "Впевн.", "Коорд. (X, Y)"])
-        self.table_targets.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table_targets.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table_targets.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table_targets.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_targets.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.table_targets.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.table_targets.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.table_targets.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents
+        )
         self.table_targets.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_targets.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table_targets.verticalHeader().setVisible(False)
@@ -569,7 +823,19 @@ class MainWindow(QMainWindow):
         layout_targets.addWidget(self.table_targets)
         main_layout.addWidget(grp_targets, stretch=1)
 
-        return sidebar
+        return panel
+
+    def _select_all_classes(self) -> None:
+        """Enable all class checkboxes."""
+        for chk in self._class_checkboxes.values():
+            chk.setChecked(True)
+        self.canvas.set_all_classes_visibility(True)
+
+    def _deselect_all_classes(self) -> None:
+        """Disable all class checkboxes."""
+        for chk in self._class_checkboxes.values():
+            chk.setChecked(False)
+        self.canvas.set_all_classes_visibility(False)
 
     def _init_status_bar(self) -> None:
         """Construct bottom status bar with progress bar, FPS, and telemetry."""
@@ -613,9 +879,19 @@ class MainWindow(QMainWindow):
         self.canvas.cursor_position_changed.connect(self._on_cursor_position_changed)
         self.canvas.detection_selected.connect(self._on_canvas_detection_selected)
         self.canvas.detections_updated.connect(self._on_visible_detections_count_updated)
+        self.canvas.show_class_ids_only_changed.connect(self._on_show_ids_changed)
+        self.canvas.scale_text_with_zoom_changed.connect(self._on_scale_zoom_changed)
 
         # Initialize initial filter values in CanvasViewer
         self.canvas.set_min_confidence(self.slider_conf.value() / 100.0)
+
+    def _on_show_ids_changed(self, show_ids: bool) -> None:
+        """Sync config when compact ID mode is changed."""
+        self.cfg.show_class_ids_only = show_ids
+
+    def _on_scale_zoom_changed(self, scale_zoom: bool) -> None:
+        """Sync config when scale with zoom mode is changed."""
+        self.cfg.scale_overlay_text_with_zoom = scale_zoom
 
     # --------------------------------------------------------------------------
     # Image Operations
