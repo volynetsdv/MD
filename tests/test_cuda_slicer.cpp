@@ -25,6 +25,15 @@ static void fill_gradient_host(uint8_t *h_img, int w, int h)
 
 int main()
 {
+    int device_count = 0;
+    cudaError_t dev_err = cudaGetDeviceCount(&device_count);
+    if (dev_err != cudaSuccess || device_count == 0)
+    {
+        std::fprintf(stderr, "SKIP: No CUDA device available (%s). Skipping test.\n",
+                     cudaGetErrorString(dev_err));
+        return 0;
+    }
+
     const int src_w = 4000;
     const int src_h = 3000;
     const size_t img_bytes = static_cast<size_t>(src_w) * src_h * 3;

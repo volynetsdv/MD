@@ -441,6 +441,15 @@ int main()
 {
     std::fprintf(stderr, "=== test_main_pipeline ===\n");
 
+    int device_count = 0;
+    cudaError_t dev_err = cudaGetDeviceCount(&device_count);
+    if (dev_err != cudaSuccess || device_count == 0)
+    {
+        std::fprintf(stderr, "SKIP: No CUDA device available (%s). Skipping GPU pipeline test.\n",
+                     cudaGetErrorString(dev_err));
+        return 0;
+    }
+
     test_T1_tiling_config_selection();
     test_T2_per_tile_vram_lifecycle();
     test_T3_remap_offsets_correctness();

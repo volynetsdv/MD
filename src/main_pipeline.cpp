@@ -346,6 +346,14 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
     if (owns_frame)
     {
+        int device_count = 0;
+        if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count == 0)
+        {
+            std::cerr << "[Pipeline] SKIP/WARNING: No CUDA device available. Skipping pipeline execution.\n";
+            result.return_code = 0;
+            return result;
+        }
+
         cudaError_t err = cudaMalloc(&d_src_img, img_bytes);
         if (err != cudaSuccess)
         {
