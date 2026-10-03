@@ -162,7 +162,7 @@ QPushButton:disabled {
     color: #475569;
 }
 
-QPushButton#btn_detect {
+QPushButton#btn_detect, QPushButton#btn_toggle_analysis {
     background-color: #0284c7;
     border: 1px solid #38bdf8;
     color: #ffffff;
@@ -171,12 +171,12 @@ QPushButton#btn_detect {
     padding: 9px;
 }
 
-QPushButton#btn_detect:hover {
+QPushButton#btn_detect:hover, QPushButton#btn_toggle_analysis:hover {
     background-color: #0ea5e9;
     border-color: #7dd3fc;
 }
 
-QPushButton#btn_detect:disabled {
+QPushButton#btn_detect:disabled, QPushButton#btn_toggle_analysis:disabled {
     background-color: #1e293b;
     border-color: #334155;
     color: #64748b;

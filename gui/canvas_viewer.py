@@ -321,8 +321,8 @@ class CanvasViewer(QGraphicsView):
 
         Args:
             detections_json: List of detection dictionaries. Expected keys:
-                - Coordinates: either ('x', 'y', 'w', 'h') or ('xmin', 'ymin', 'xmax', 'ymax')
-                - 'conf': confidence score float [0.0, 1.0]
+                - Coordinates: ('x', 'y', 'w', 'h'), 'bbox': [x, y, w, h], or ('xmin', 'ymin', 'xmax', 'ymax')
+                - 'conf' / 'confidence': confidence score float [0.0, 1.0]
                 - 'class_id': integer class index
                 - Optional: 'class_name'
         """
@@ -341,10 +341,19 @@ class CanvasViewer(QGraphicsView):
         if self.viewport():
             self.viewport().update()
 
+    def set_detections(self, detections_json: List[Dict[str, Any]]) -> None:
+        """Set non-destructive vector overlays for detection results (alias for update_detections)."""
+        self.update_detections(detections_json)
+
     def _parse_coordinates(self, det: Dict[str, Any]) -> Optional[QRectF]:
         """Extract absolute pixel coordinates from detection dictionary."""
         try:
-            if "x" in det and "y" in det and "w" in det and "h" in det:
+            if "bbox" in det and isinstance(det["bbox"], (list, tuple)) and len(det["bbox"]) == 4:
+                x = float(det["bbox"][0])
+                y = float(det["bbox"][1])
+                w = float(det["bbox"][2])
+                h = float(det["bbox"][3])
+            elif "x" in det and "y" in det and "w" in det and "h" in det:
                 x = float(det["x"])
                 y = float(det["y"])
                 w = float(det["w"])

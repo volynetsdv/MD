@@ -60,7 +60,15 @@ from PySide6.QtWidgets import (
 )
 
 from core.config_manager import AppConfig, get_config
+from core.metadata_cache import (
+    get_metadata_cache_path,
+    has_metadata_cache,
+    load_metadata_cache,
+    metadata_to_gui_detections,
+    save_metadata_cache,
+)
 from gui.async_worker import InferenceWorker
+from gui.batch_triage_worker import BatchTriageWorker
 from gui.canvas_viewer import (
     DEFAULT_CLASS_NAMES,
     CanvasViewer,
@@ -68,6 +76,7 @@ from gui.canvas_viewer import (
 )
 from gui.settings_dialog import SettingsDialog
 from gui.styles import DARK_TACTICAL_STYLE
+from src.detector_dispatcher import UnifiedDetector
 
 logger = logging.getLogger(__name__)
 
@@ -407,9 +416,14 @@ class MainWindow(QMainWindow):
         # State
         self._current_image_path: Optional[str] = None
         self._current_image_array: Optional[np.ndarray] = None
+        self._current_folder: Optional[str] = None
         self._is_mock_image: bool = False
         self._worker: Optional[InferenceWorker] = None
+        self._batch_worker: Optional[BatchTriageWorker] = None
         self._class_checkboxes: Dict[int, QCheckBox] = {}
+        self.is_analysis_active: bool = False
+        self._shared_detector: Optional[UnifiedDetector] = None
+        self._batch_detector: Optional[UnifiedDetector] = None
 
         self.cfg = get_config()
 
@@ -494,6 +508,11 @@ class MainWindow(QMainWindow):
         act_mock.setShortcut(QKeySequence("Ctrl+T"))
         act_mock.triggered.connect(self.load_mock_8k_image)
         menu_file.addAction(act_mock)
+
+        act_batch = QAction("⚡ Пакетний аналіз папки...", self)
+        act_batch.setShortcut(QKeySequence("Ctrl+B"))
+        act_batch.triggered.connect(self._on_batch_triage_dialog)
+        menu_file.addAction(act_batch)
 
         menu_file.addSeparator()
 
@@ -597,6 +616,12 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_load_mock_8k)
         layout_input.addLayout(btn_layout)
 
+        self.btn_batch_triage = QPushButton("⚡ Пакетний аналіз папки", grp_input)
+        self.btn_batch_triage.setObjectName("btn_batch_triage")
+        self.btn_batch_triage.setToolTip("Пакетна фільтрація папки зі збереженням детекцій у JSON (Batch Triage)")
+        self.btn_batch_triage.clicked.connect(self._on_batch_triage_dialog)
+        layout_input.addWidget(self.btn_batch_triage)
+
         # Convenient aliases for buttons
         self.btn_open_file = self.btn_open
         self.btn_test_8k = self.btn_load_mock_8k
@@ -659,19 +684,22 @@ class MainWindow(QMainWindow):
 
         # Start and Cancel Detection Buttons
         detect_layout = QHBoxLayout()
-        self.btn_detect = QPushButton("▶ Старт детекції", grp_params)
-        self.btn_detect.setObjectName("btn_detect")
-        self.btn_detect.setEnabled(False)
-        self.btn_detect.setToolTip("Запустити детекцію цілей на знімку (F5)")
-        self.btn_detect.clicked.connect(self.start_detection)
+        self.btn_toggle_analysis = QPushButton("▶ Почати аналіз", grp_params)
+        self.btn_toggle_analysis.setObjectName("btn_toggle_analysis")
+        self.btn_toggle_analysis.setEnabled(False)
+        self.btn_toggle_analysis.setToolTip("Запустити або зупинити автоматичний аналіз знімків")
+        self.btn_toggle_analysis.clicked.connect(self.toggle_analysis)
+
+        # Alias for backwards compatibility
+        self.btn_detect = self.btn_toggle_analysis
 
         self.btn_cancel = QPushButton("⏹ Зупинити", grp_params)
         self.btn_cancel.setObjectName("btn_cancel")
         self.btn_cancel.setVisible(False)
-        self.btn_cancel.setToolTip("Зупинити процес детекції")
+        self.btn_cancel.setToolTip("Зупинити процес детекції або пакетного аналізу")
         self.btn_cancel.clicked.connect(self.cancel_detection)
 
-        detect_layout.addWidget(self.btn_detect, stretch=3)
+        detect_layout.addWidget(self.btn_toggle_analysis, stretch=3)
         detect_layout.addWidget(self.btn_cancel, stretch=1)
         layout_params.addLayout(detect_layout, 2, 0, 1, 2)
 
@@ -934,6 +962,7 @@ class MainWindow(QMainWindow):
         if not p.exists() or not p.is_dir():
             return
 
+        self._current_folder = str(p)
         files = [f for f in sorted(p.iterdir()) if f.is_file() and f.suffix.lower() in valid_exts]
         self.list_files.blockSignals(True)
         self.list_files.clear()
@@ -960,7 +989,7 @@ class MainWindow(QMainWindow):
                 self.load_image_file(fpath)
 
     def load_image_file(self, file_path: str) -> bool:
-        """Load image file and prepare workspace."""
+        """Load image file and prepare workspace, checking JSON cache first."""
         success = self.canvas.load_image(file_path)
         if success:
             self._current_image_path = file_path
@@ -970,9 +999,34 @@ class MainWindow(QMainWindow):
             self.lbl_image_info.setText(
                 f"Файл: {Path(file_path).name}\nРоздільність: {w} × {h} px"
             )
-            self.btn_detect.setEnabled(True)
-            self.status_bar.showMessage(f"Завантажено: {Path(file_path).name} ({w}×{h})", 4000)
+            self.btn_toggle_analysis.setEnabled(True)
             self.table_targets.setRowCount(0)
+
+            # Check for neighboring JSON metadata cache
+            if has_metadata_cache(file_path):
+                json_path = get_metadata_cache_path(file_path)
+                cached_data = load_metadata_cache(json_path)
+                if cached_data is not None:
+                    gui_dets = metadata_to_gui_detections(cached_data)
+                    self.canvas.set_detections(gui_dets)
+                    self._populate_target_table(gui_dets)
+                    logger.info(
+                        "[INFO] Знайдено кеш метаданих. Візуалізацію відновлено з JSON: %s",
+                        json_path,
+                    )
+                    self.status_bar.showMessage(
+                        f"[INFO] Знайдено кеш метаданих. Візуалізацію відновлено з JSON ({len(gui_dets)} цілей).",
+                        5000,
+                    )
+                    return True
+
+            # If no cache found, clear any previous detections
+            self.canvas.clear_detections()
+            self.status_bar.showMessage(f"Завантажено: {Path(file_path).name} ({w}×{h})", 4000)
+
+            # Interactive stream analysis: if active, automatically run inference
+            if self.is_analysis_active:
+                self.start_detection()
         else:
             QMessageBox.critical(self, "Помилка", f"Не вдалося відкрити файл:\n{file_path}")
         return success
@@ -1017,9 +1071,52 @@ class MainWindow(QMainWindow):
         self.lbl_image_info.setText(
             f"Файл: synthetic_8k_pattern.png\nРоздільність: {w} × {h} px (8K Ultra-HD)"
         )
-        self.btn_detect.setEnabled(True)
+        self.btn_toggle_analysis.setEnabled(True)
         self.status_bar.showMessage("Згенеровано та завантажено тестовий 8K кадр (7680×4320)", 4000)
         self.table_targets.setRowCount(0)
+
+        if self.is_analysis_active:
+            self.start_detection()
+
+    # --------------------------------------------------------------------------
+    # Interactive Stream Analysis & Lifecycle
+    # --------------------------------------------------------------------------
+    def toggle_analysis(self) -> None:
+        """Toggle stream analysis active state."""
+        self.set_analysis_active(not self.is_analysis_active)
+
+    def set_analysis_active(self, active: bool) -> None:
+        """Set stream analysis active state and update button appearance."""
+        self.is_analysis_active = bool(active)
+        if self.is_analysis_active:
+            self.btn_toggle_analysis.setText("⏹ Зупинити аналіз")
+            self.btn_toggle_analysis.setStyleSheet(
+                "background-color: #ef4444; border: 1px solid #f87171; color: #ffffff; "
+                "font-weight: bold; font-size: 14px; padding: 9px;"
+            )
+            self.status_bar.showMessage("Режим аналізу активовано")
+            if self.canvas.has_image():
+                self.start_detection()
+        else:
+            self.btn_toggle_analysis.setText("▶ Почати аналіз")
+            self.btn_toggle_analysis.setStyleSheet(
+                "background-color: #0284c7; border: 1px solid #38bdf8; color: #ffffff; "
+                "font-weight: bold; font-size: 14px; padding: 9px;"
+            )
+            self.status_bar.showMessage("Режим аналізу зупинено")
+            self.cancel_detection()
+
+    def get_shared_detector(self) -> UnifiedDetector:
+        """Get or initialize the shared UnifiedDetector instance for the workstation."""
+        if self._shared_detector is None:
+            self._shared_detector = UnifiedDetector()
+        return self._shared_detector
+
+    def get_batch_detector(self) -> UnifiedDetector:
+        """Get or initialize the autonomous UnifiedDetector instance dedicated to batch operations."""
+        if self._batch_detector is None:
+            self._batch_detector = UnifiedDetector()
+        return self._batch_detector
 
     # --------------------------------------------------------------------------
     # Asynchronous Detection Pipeline Integration
@@ -1040,8 +1137,18 @@ class MainWindow(QMainWindow):
             else (self._current_image_path or "synthetic_8k_pattern.png")
         )
 
+        # Cancel any previously running worker asynchronously without blocking GUI event loop
+        if self._worker is not None and self._worker.isRunning():
+            try:
+                self._worker.progress_changed.disconnect()
+                self._worker.detection_completed.disconnect()
+                self._worker.error_occurred.disconnect()
+                self._worker.finished.disconnect()
+            except Exception:
+                pass
+            self._worker.cancel()
+
         # Update UI state
-        self.btn_detect.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.btn_cancel.setVisible(True)
         self.progress_bar.setValue(0)
@@ -1054,6 +1161,7 @@ class MainWindow(QMainWindow):
             altitude=alt,
             vram_mb=vram,
             conf_threshold=conf_thresh,
+            detector=self.get_shared_detector(),
             is_mock=self._is_mock_image,
             parent=self,
         )
@@ -1064,10 +1172,16 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def cancel_detection(self) -> None:
-        """Request cancellation of running inference worker."""
+        """Request cancellation of running inference worker or batch triage worker."""
+        cancelled = False
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
-            self.status_bar.showMessage("Зупинка детекції...")
+            cancelled = True
+        if self._batch_worker is not None and self._batch_worker.isRunning():
+            self._batch_worker.cancel()
+            cancelled = True
+        if cancelled:
+            self.status_bar.showMessage("Зупинка аналізу...")
             self.btn_cancel.setEnabled(False)
 
     def _on_worker_progress(self, current: int, total: int, status_msg: str) -> None:
@@ -1084,20 +1198,43 @@ class MainWindow(QMainWindow):
     def _on_worker_finished(self) -> None:
         """Reset UI state after worker termination."""
         self.progress_bar.setVisible(False)
-        self.btn_detect.setEnabled(True)
+        self.btn_toggle_analysis.setEnabled(True)
         self.btn_cancel.setVisible(False)
 
     def _on_detection_finished(self, detections: List[Dict[str, Any]], elapsed_ms: float) -> None:
         """Handle detection results received from worker."""
         self.progress_bar.setVisible(False)
-        self.btn_detect.setEnabled(True)
+        self.btn_toggle_analysis.setEnabled(True)
         self.btn_cancel.setVisible(False)
 
-        # Update canvas overlay (absolute 8K pixel coordinates)
+        # Retain styling based on analysis state
+        if self.is_analysis_active:
+            self.btn_toggle_analysis.setText("⏹ Зупинити аналіз")
+            self.btn_toggle_analysis.setStyleSheet(
+                "background-color: #ef4444; border: 1px solid #f87171; color: #ffffff; "
+                "font-weight: bold; font-size: 14px; padding: 9px;"
+            )
+        else:
+            self.btn_toggle_analysis.setText("▶ Почати аналіз")
+            self.btn_toggle_analysis.setStyleSheet(
+                "background-color: #0284c7; border: 1px solid #38bdf8; color: #ffffff; "
+                "font-weight: bold; font-size: 14px; padding: 9px;"
+            )
+
+        # Update canvas overlay (absolute pixel coordinates)
         self.canvas.update_detections(detections)
 
         # Populate target list table
         self._populate_target_table(detections)
+
+        # Persist to neighboring JSON metadata cache if real file
+        if self._current_image_path and Path(self._current_image_path).is_file():
+            try:
+                w, h = self.canvas.get_image_size()
+                if w > 0 and h > 0:
+                    save_metadata_cache(self._current_image_path, (w, h), detections)
+            except Exception as exc:
+                logger.warning("Failed to auto-save metadata cache: %s", exc)
 
         # Update telemetry and status bar
         fps = (1000.0 / elapsed_ms) if elapsed_ms > 0 else 0.0
@@ -1114,9 +1251,13 @@ class MainWindow(QMainWindow):
         for row, det in enumerate(detections):
             det_id = str(det.get("id", row + 1))
             class_name = det.get("class_name", f"Клас {det.get('class_id', 0)}")
-            conf = float(det.get("conf", 0.0))
-            x = int(det.get("x", 0))
-            y = int(det.get("y", 0))
+            conf = float(det.get("confidence", det.get("conf", 0.0)))
+            if "bbox" in det and isinstance(det["bbox"], (list, tuple)) and len(det["bbox"]) == 4:
+                x = int(det["bbox"][0])
+                y = int(det["bbox"][1])
+            else:
+                x = int(det.get("x", 0))
+                y = int(det.get("y", 0))
 
             color = get_class_color(int(det.get("class_id", 0)))
 
@@ -1136,6 +1277,116 @@ class MainWindow(QMainWindow):
             self.table_targets.setItem(row, 1, item_class)
             self.table_targets.setItem(row, 2, item_conf)
             self.table_targets.setItem(row, 3, item_coords)
+
+    # --------------------------------------------------------------------------
+    # Batch Triage Filtering (BatchTriageWorker)
+    # --------------------------------------------------------------------------
+    def _on_batch_triage_dialog(self) -> None:
+        """Prompt operator for directories and launch batch triage filtering."""
+        input_dir = self._current_folder
+        if not input_dir or not Path(input_dir).is_dir():
+            input_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Оберіть вхідну папку з аерофотознімками для пакетного аналізу",
+                "",
+                QFileDialog.Option.ShowDirsOnly,
+            )
+            if not input_dir:
+                return
+            self._current_folder = input_dir
+
+        input_path = Path(input_dir).resolve()
+        default_out = str(input_path.parent / f"{input_path.name}_detected")
+
+        output_dir = QFileDialog.getExistingDirectory(
+            self,
+            f"Оберіть папку для збереження результатів (за замовчуванням: {input_path.name}_detected)",
+            default_out,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not output_dir or Path(output_dir).resolve() == input_path:
+            output_dir = default_out
+
+        self.start_batch_triage(str(input_path), str(output_dir))
+
+    def start_batch_triage(self, input_folder: str, output_folder: Optional[str] = None) -> None:
+        """Initialize and launch background BatchTriageWorker."""
+        input_p = Path(input_folder).resolve()
+        out_p = Path(output_folder).resolve() if output_folder else None
+        if out_p is None or out_p == input_p:
+            output_folder = str(input_p.parent / f"{input_p.name}_detected")
+
+        alt = float(self.spin_altitude.value())
+        vram_data = self.combo_vram.currentData()
+        vram = 2048 if vram_data == -1 else int(vram_data)
+        conf_thresh = self.slider_conf.value() / 100.0
+
+        self.is_analysis_active = True
+        self.btn_toggle_analysis.setText("⏹ Зупинити аналіз")
+        self.btn_toggle_analysis.setStyleSheet(
+            "background-color: #ef4444; border: 1px solid #f87171; color: #ffffff; "
+            "font-weight: bold; font-size: 14px; padding: 9px;"
+        )
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.status_bar.showMessage(f"Запуск пакетного аналізу: {input_p.name}...")
+
+        # Cancel any previously running batch worker asynchronously without blocking GUI event loop
+        if self._batch_worker is not None and self._batch_worker.isRunning():
+            try:
+                self._batch_worker.progress_changed.disconnect()
+                self._batch_worker.triage_completed.disconnect()
+                self._batch_worker.error_occurred.disconnect()
+                self._batch_worker.finished.disconnect()
+            except Exception:
+                pass
+            self._batch_worker.cancel()
+
+        self._batch_worker = BatchTriageWorker(
+            input_folder=str(input_p),
+            output_folder=str(output_folder),
+            altitude=alt,
+            vram_mb=vram,
+            conf_threshold=conf_thresh,
+            detector=self.get_batch_detector(),
+            parent=self,
+        )
+        self._batch_worker.progress_changed.connect(self._on_batch_progress)
+        self._batch_worker.triage_completed.connect(self._on_batch_triage_completed)
+        self._batch_worker.error_occurred.connect(self._on_worker_error)
+        self._batch_worker.finished.connect(self._on_batch_worker_finished)
+        self._batch_worker.start()
+
+    def _on_batch_progress(self, current: int, total: int, status_msg: str) -> None:
+        """Update progress bar and status bar during batch triage."""
+        if total > 0:
+            pct = int((current / total) * 100)
+            self.progress_bar.setValue(pct)
+        self.status_bar.showMessage(status_msg)
+
+    def _on_batch_triage_completed(
+        self, total: int, positive: int, elapsed_sec: float
+    ) -> None:
+        """Report results upon batch triage completion."""
+        self.status_bar.showMessage(
+            f"Пакетний аналіз завершено: {positive} із {total} знімків містять цілі ({elapsed_sec:.1f} с).",
+            8000,
+        )
+        QMessageBox.information(
+            self,
+            "Пакетний аналіз завершено",
+            f"Оброблено файлів: {total}\n"
+            f"Знімків із знайденими цілями: {positive}\n"
+            f"Час обробки: {elapsed_sec:.1f} с",
+        )
+
+    def _on_batch_worker_finished(self) -> None:
+        """Reset UI controls after batch worker terminates."""
+        self.progress_bar.setVisible(False)
+        self.btn_cancel.setVisible(False)
+        self.set_analysis_active(False)
 
     # --------------------------------------------------------------------------
     # User Interactivity & Telemetry Handlers
@@ -1181,4 +1432,14 @@ class MainWindow(QMainWindow):
         """Set initial status bar text."""
         self.lbl_status_coords.setText("X: — | Y: —")
         self.lbl_status_zoom.setText("Zoom: 100%")
+
+    def closeEvent(self, event: Any) -> None:
+        """Ensure background workers are stopped cleanly before window destruction."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(1000)
+        if self._batch_worker is not None and self._batch_worker.isRunning():
+            self._batch_worker.cancel()
+            self._batch_worker.wait(1000)
+        super().closeEvent(event)
 

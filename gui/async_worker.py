@@ -17,9 +17,10 @@ import math
 import os
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -154,12 +155,17 @@ def py_cluster_diou_nms(
     diou_threshold: float = 0.5,
     conf_threshold: float = 0.0,
 ) -> List[GlobalDet]:
-    """Python fallback for Cluster-DIoU-NMS."""
+    """Lightweight, ultra-fast Greedy DIoU-NMS implementation."""
     candidates = [
-        d for d in detections if d.conf >= conf_threshold and d.w > 0 and d.h > 0
+        d for d in detections if d.conf >= conf_threshold and d.w > 0.0 and d.h > 0.0
     ]
     if not candidates:
         return []
+
+    # Hard cap proposals to top-800 candidates sorted by confidence
+    if len(candidates) > 800:
+        candidates.sort(key=lambda x: x.conf, reverse=True)
+        candidates = candidates[:800]
 
     # Group by class
     classes = sorted({d.class_id for d in candidates})
@@ -170,29 +176,69 @@ def py_cluster_diou_nms(
         cls_boxes.sort(key=lambda x: x.conf, reverse=True)
 
         n = len(cls_boxes)
-        visited = [False] * n
+        if n == 1:
+            result.append(cls_boxes[0])
+            continue
+
+        # In-place float32 coordinate arrays: [x1, y1, x2, y2]
+        boxes = np.empty((n, 4), dtype=np.float32)
+        for i, d in enumerate(cls_boxes):
+            boxes[i, 0] = d.x
+            boxes[i, 1] = d.y
+            boxes[i, 2] = d.x + d.w
+            boxes[i, 3] = d.y + d.h
+
+        areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        centers_x = (boxes[:, 0] + boxes[:, 2]) * 0.5
+        centers_y = (boxes[:, 1] + boxes[:, 3]) * 0.5
+
+        suppressed = np.zeros(n, dtype=bool)
 
         for i in range(n):
-            if visited[i]:
+            if suppressed[i]:
                 continue
-            visited[i] = True
+            result.append(cls_boxes[i])
 
-            # BFS cluster
-            cluster = [cls_boxes[i]]
-            queue = [i]
+            rem_mask = ~suppressed[i + 1:]
+            if not np.any(rem_mask):
+                break
 
-            while queue:
-                curr = queue.pop(0)
-                for j in range(n):
-                    if not visited[j]:
-                        if py_calculate_diou(cls_boxes[curr], cls_boxes[j]) >= diou_threshold:
-                            visited[j] = True
-                            cluster.append(cls_boxes[j])
-                            queue.append(j)
+            rem_idx = np.flatnonzero(rem_mask) + (i + 1)
 
-            # Merge cluster: highest confidence box
-            best = max(cluster, key=lambda d: d.conf)
-            result.append(best)
+            # Vectorized 1D intersection check with remaining candidates
+            xx1 = np.maximum(boxes[i, 0], boxes[rem_idx, 0])
+            yy1 = np.maximum(boxes[i, 1], boxes[rem_idx, 1])
+            xx2 = np.minimum(boxes[i, 2], boxes[rem_idx, 2])
+            yy2 = np.minimum(boxes[i, 3], boxes[rem_idx, 3])
+
+            inter_w = np.maximum(0.0, xx2 - xx1)
+            inter_h = np.maximum(0.0, yy2 - yy1)
+            inter_area = inter_w * inter_h
+
+            overlap_mask = inter_area > 0.0
+            if not np.any(overlap_mask):
+                continue
+
+            sub_idx = rem_idx[overlap_mask]
+            sub_inter = inter_area[overlap_mask]
+
+            union = areas[i] + areas[sub_idx] - sub_inter
+            iou = np.where(union > 1e-7, sub_inter / union, 0.0)
+
+            d2 = (
+                (centers_x[i] - centers_x[sub_idx]) ** 2
+                + (centers_y[i] - centers_y[sub_idx]) ** 2
+            )
+            enc_x1 = np.minimum(boxes[i, 0], boxes[sub_idx, 0])
+            enc_y1 = np.minimum(boxes[i, 1], boxes[sub_idx, 1])
+            enc_x2 = np.maximum(boxes[i, 2], boxes[sub_idx, 2])
+            enc_y2 = np.maximum(boxes[i, 3], boxes[sub_idx, 3])
+            c2 = (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2
+
+            diou = np.where(c2 > 1e-7, iou - (d2 / c2), iou)
+            to_suppress = sub_idx[diou >= diou_threshold]
+            if to_suppress.size > 0:
+                suppressed[to_suppress] = True
 
     return result
 
@@ -247,6 +293,27 @@ class InferenceWorker(QThread):
 
     def is_cancelled(self) -> bool:
         return self._is_cancelled
+
+    def _format_results_for_gui(self, detections: list) -> list:
+        """
+        Форматує результати виявлення (список об'єктів або словників)
+        у стандартизований формат для передачі у CanvasViewer та таблицю цілей.
+        """
+        formatted = []
+        for det in detections:
+            if isinstance(det, dict):
+                formatted.append(det)
+            elif hasattr(det, "to_dict"):
+                formatted.append(det.to_dict())
+            elif isinstance(det, (list, tuple)) and len(det) >= 6:
+                # Формат: [x1, y1, x2, y2, conf, class_id]
+                x1, y1, x2, y2, conf, cls_id = det[:6]
+                formatted.append({
+                    "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                    "confidence": float(conf),
+                    "class_id": int(cls_id)
+                })
+        return formatted
 
     def run(self) -> None:
         """Execute image loading, tiling, inference, offset remapping, and NMS."""
@@ -487,20 +554,225 @@ class InferenceWorker(QThread):
 
     def _format_results_for_gui(self, detections: List[Any]) -> List[Dict[str, Any]]:
         """Convert global detection objects to clean dictionary representations."""
-        results: List[Dict[str, Any]] = []
-        for i, det in enumerate(detections):
+        return format_detections_for_gui(detections)
+
+
+def calculate_tiles_for_image(
+    width: int, height: int, altitude: float, vram_mb: int
+) -> Tuple[int, List[Any]]:
+    """Calculate dynamic tiling plan using pytiling_core or Python fallback."""
+    if _pytiling_available:
+        cfg = pytiling_core.calculate_tiling_params(
+            width=width,
+            height=height,
+            altitude=altitude,
+            vram_mb=vram_mb,
+        )
+        return cfg.tile_size, list(cfg.tiles)
+
+    return py_calculate_tiling_params(
+        width=width,
+        height=height,
+        altitude=altitude,
+        vram_mb=vram_mb,
+    )
+
+
+def remap_detection_to_global(
+    det: Detection, tile: Any, model_size: int, tile_id: int
+) -> Any:
+    """Remap tile-local detection to global frame coordinates."""
+    if _pytiling_available and hasattr(pytiling_core, "remap_offsets"):
+        return pytiling_core.remap_offsets(
+            det.to_cpp(),
+            tile,
+            model_size,
+            tile_id,
+        )
+
+    # Python fallback formula:
+    scale_x = float(tile.w) / float(model_size)
+    scale_y = float(tile.h) / float(model_size)
+    gx = float(tile.x) + det.x_local * scale_x
+    gy = float(tile.y) + det.y_local * scale_y
+    gw = det.w * scale_x
+    gh = det.h * scale_y
+
+    return GlobalDet(
+        x=gx,
+        y=gy,
+        w=gw,
+        h=gh,
+        conf=det.conf,
+        class_id=det.class_id,
+        tile_id=tile_id,
+    )
+
+
+def merge_boundary_detections(
+    detections: List[Any],
+    tiles: List[Any],
+    diou_threshold: float = 0.50,
+    conf_threshold: float = 0.0,
+) -> List[Any]:
+    """Perform Cluster-DIoU-NMS to merge overlapping detections."""
+    if not detections:
+        return []
+
+    if _pytiling_available and hasattr(pytiling_core, "cluster_diou_nms"):
+        try:
+            return pytiling_core.cluster_diou_nms(
+                detections,
+                tiles,
+                diou_threshold,
+                conf_threshold,
+            )
+        except Exception as e:
+            logger.warning("pytiling_core.cluster_diou_nms failed (%s), using fallback.", e)
+
+    # Python fallback
+    py_dets = []
+    for d in detections:
+        if isinstance(d, GlobalDet):
+            py_dets.append(d)
+        else:
+            py_dets.append(
+                GlobalDet(
+                    x=float(d.x),
+                    y=float(d.y),
+                    w=float(d.w),
+                    h=float(d.h),
+                    conf=float(d.conf),
+                    class_id=int(d.class_id),
+                    tile_id=int(getattr(d, "tile_id", -1)),
+                )
+            )
+
+    return py_cluster_diou_nms(
+        py_dets,
+        tiles,
+        diou_threshold,
+        conf_threshold,
+    )
+
+
+def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
+    """Convert global detection objects to clean dictionary representations."""
+    results: List[Dict[str, Any]] = []
+    for i, det in enumerate(detections):
+        if isinstance(det, dict):
+            class_id = int(det.get("class_id", 0))
+            class_name = str(det.get("class_name", DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")))
+            conf = float(det.get("confidence", det.get("conf", 0.0)))
+            if "bbox" in det and isinstance(det["bbox"], (list, tuple)) and len(det["bbox"]) == 4:
+                x = round(float(det["bbox"][0]), 2)
+                y = round(float(det["bbox"][1]), 2)
+                w = round(float(det["bbox"][2]), 2)
+                h = round(float(det["bbox"][3]), 2)
+            else:
+                x = round(float(det.get("x", 0.0)), 2)
+                y = round(float(det.get("y", 0.0)), 2)
+                w = round(float(det.get("w", 0.0)), 2)
+                h = round(float(det.get("h", 0.0)), 2)
+        else:
             class_id = int(det.class_id)
             class_name = DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")
-            results.append(
-                {
-                    "id": i + 1,
-                    "x": round(float(det.x), 2),
-                    "y": round(float(det.y), 2),
-                    "w": round(float(det.w), 2),
-                    "h": round(float(det.h), 2),
-                    "conf": round(float(det.conf), 4),
-                    "class_id": class_id,
-                    "class_name": class_name,
-                }
+            x = round(float(det.x), 2)
+            y = round(float(det.y), 2)
+            w = round(float(det.w), 2)
+            h = round(float(det.h), 2)
+            conf = round(float(det.conf), 4)
+
+        results.append(
+            {
+                "id": i + 1,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "conf": round(conf, 4),
+                "confidence": round(conf, 4),
+                "class_id": class_id,
+                "class_name": class_name,
+                "bbox": [x, y, w, h],
+            }
+        )
+    return results
+
+
+def run_tiled_inference(
+    img_rgb: np.ndarray,
+    altitude: float = 120.0,
+    vram_mb: int = 2048,
+    conf_threshold: float = 0.20,
+    diou_threshold: float = 0.50,
+    detector: Optional[UnifiedDetector] = None,
+    is_mock: bool = False,
+    is_cancelled_fn: Optional[Callable[[], bool]] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> List[Dict[str, Any]]:
+    """Execute complete tiled detection pipeline on an image buffer."""
+    img_h, img_w = img_rgb.shape[:2]
+    tile_size, tiles = calculate_tiles_for_image(img_w, img_h, altitude, vram_mb)
+    total_tiles = len(tiles)
+    if total_tiles == 0:
+        return []
+
+    if detector is None:
+        detector = UnifiedDetector()
+
+    all_global_detections: List[Any] = []
+    for idx, tile in enumerate(tiles):
+        tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
+        tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
+
+        tile_dets = []
+        if is_mock:
+            scale_x = float(tile_size) / float(tile.w)
+            scale_y = float(tile_size) / float(tile.h)
+            for st in SYNTHETIC_TARGETS:
+                if (
+                    st["gx"] + st["gw"] > tile.x
+                    and st["gx"] < tile.x + tile.w
+                    and st["gy"] + st["gh"] > tile.y
+                    and st["gy"] < tile.y + tile.h
+                ):
+                    tile_dets.append(
+                        Detection(
+                            x_local=(st["gx"] - float(tile.x)) * scale_x,
+                            y_local=(st["gy"] - float(tile.y)) * scale_y,
+                            w=st["gw"] * scale_x,
+                            h=st["gh"] * scale_y,
+                            conf=st["conf"],
+                            class_id=st["class_id"],
+                        )
+                    )
+            time.sleep(0.002)
+        else:
+            tile_dets = detector.predict_tile(
+                tile_slice,
+                tile_size=tile_size,
+                conf_threshold=conf_threshold,
             )
-        return results
+
+        del tile_slice
+
+        for d in tile_dets:
+            global_det = remap_detection_to_global(d, tile, tile_size, idx)
+            all_global_detections.append(global_det)
+
+        if progress_callback:
+            status_msg = f"Обробка тайла {idx + 1}/{total_tiles} (знайдено: {len(all_global_detections)})..."
+            progress_callback(idx + 1, total_tiles, status_msg)
+
+    merged_detections = merge_boundary_detections(
+        all_global_detections, tiles, diou_threshold=diou_threshold, conf_threshold=conf_threshold
+    )
+    return format_detections_for_gui(merged_detections)
+
+
+# Re-export BatchTriageWorker for convenience
+try:
+    from gui.batch_triage_worker import BatchTriageWorker
+except ImportError:
+    pass

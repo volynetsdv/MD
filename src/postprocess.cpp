@@ -15,6 +15,8 @@ namespace
         float y1;
         float x2;
         float y2;
+        int tile1;
+        int tile2;
     };
 
     bool box_intersects_region(const GlobalDetection &box, const OverlapRect &r)
@@ -27,10 +29,15 @@ namespace
         return !(bx2 <= r.x1 || bx1 >= r.x2 || by2 <= r.y1 || by1 >= r.y2);
     }
 
-    std::vector<OverlapRect> compute_overlap_regions(const std::vector<TileRect> &tiles)
+    std::vector<OverlapRect> compute_overlap_regions(const std::vector<TileRect> &tiles,
+                                                     std::vector<std::vector<size_t>> *tile_to_overlap = nullptr)
     {
         std::vector<OverlapRect> overlaps;
         const size_t n = tiles.size();
+        if (tile_to_overlap)
+        {
+            tile_to_overlap->assign(n, {});
+        }
         for (size_t i = 0; i < n; ++i)
         {
             for (size_t j = i + 1; j < n; ++j)
@@ -42,11 +49,42 @@ namespace
 
                 if (x2 > x1 && y2 > y1)
                 {
-                    overlaps.push_back({x1, y1, x2, y2});
+                    size_t r_idx = overlaps.size();
+                    overlaps.push_back({x1, y1, x2, y2, static_cast<int>(i), static_cast<int>(j)});
+                    if (tile_to_overlap)
+                    {
+                        (*tile_to_overlap)[i].push_back(r_idx);
+                        (*tile_to_overlap)[j].push_back(r_idx);
+                    }
                 }
             }
         }
         return overlaps;
+    }
+
+    bool is_box_in_overlap(const GlobalDetection &box,
+                           const std::vector<OverlapRect> &overlaps,
+                           const std::vector<std::vector<size_t>> &tile_to_overlap)
+    {
+        if (overlaps.empty())
+            return false;
+
+        if (box.tile_id >= 0 && static_cast<size_t>(box.tile_id) < tile_to_overlap.size())
+        {
+            for (size_t r_idx : tile_to_overlap[box.tile_id])
+            {
+                if (box_intersects_region(box, overlaps[r_idx]))
+                    return true;
+            }
+            return false;
+        }
+
+        for (const auto &r : overlaps)
+        {
+            if (box_intersects_region(box, r))
+                return true;
+        }
+        return false;
     }
 
     std::vector<TileRect> to_tile_rects(const std::vector<Rect> &rects)
@@ -213,9 +251,10 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
 
     // 2. Precompute tile overlap zones if tiles are provided
     std::vector<OverlapRect> overlap_regions;
+    std::vector<std::vector<size_t>> tile_to_overlap;
     if (!tiles.empty())
     {
-        overlap_regions = compute_overlap_regions(tiles);
+        overlap_regions = compute_overlap_regions(tiles, &tile_to_overlap);
     }
 
     // 3. Group by class
@@ -246,55 +285,88 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
                   { return a.conf > b.conf; });
 
         const size_t num_boxes = cls_boxes.size();
+        if (num_boxes == 1)
+        {
+            result.push_back(cls_boxes[0]);
+            continue;
+        }
+
+        // Determine which boxes lie on an overlap boundary
+        std::vector<uint8_t> on_boundary(num_boxes, 0);
+        std::vector<size_t> boundary_indices;
+        boundary_indices.reserve(num_boxes);
+
+        if (!overlap_regions.empty())
+        {
+            for (size_t i = 0; i < num_boxes; ++i)
+            {
+                if (is_box_in_overlap(cls_boxes[i], overlap_regions, tile_to_overlap))
+                {
+                    on_boundary[i] = 1;
+                    boundary_indices.push_back(i);
+                }
+            }
+        }
+        else
+        {
+            for (size_t i = 0; i < num_boxes; ++i)
+            {
+                on_boundary[i] = 1;
+                boundary_indices.push_back(i);
+            }
+        }
+
         std::vector<std::vector<size_t>> adj(num_boxes);
 
-        // Build adjacency graph for clustering
-        for (size_t i = 0; i < num_boxes; ++i)
+        if (boundary_indices.size() > 1)
         {
-            for (size_t j = i + 1; j < num_boxes; ++j)
+            // Sort boundary candidates by X coordinate for Sweep-and-Prune
+            std::vector<size_t> sorted_by_x = boundary_indices;
+            std::sort(sorted_by_x.begin(), sorted_by_x.end(),
+                      [&cls_boxes](size_t a, size_t b)
+                      { return cls_boxes[a].x < cls_boxes[b].x; });
+
+            const size_t num_boundary = sorted_by_x.size();
+            for (size_t k1 = 0; k1 < num_boundary; ++k1)
             {
+                size_t i = sorted_by_x[k1];
                 const auto &bi = cls_boxes[i];
-                const auto &bj = cls_boxes[j];
+                float bi_x2 = bi.x + bi.w;
+                float bi_y1 = bi.y;
+                float bi_y2 = bi.y + bi.h;
 
-                // Check condition: merge only at overlap boundaries
-                bool on_overlap_boundary = true;
-
-                if (!overlap_regions.empty())
+                for (size_t k2 = k1 + 1; k2 < num_boundary; ++k2)
                 {
-                    // Must intersect at least one overlap zone between tiles
-                    bool i_in_overlap = false;
-                    bool j_in_overlap = false;
-                    for (const auto &r : overlap_regions)
+                    size_t j = sorted_by_x[k2];
+                    const auto &bj = cls_boxes[j];
+
+                    // Sweep-and-prune: if bj starts after bi ends, no overlap can ever occur
+                    if (diou_threshold > 0.0f && bj.x >= bi_x2)
                     {
-                        if (box_intersects_region(bi, r))
-                            i_in_overlap = true;
-                        if (box_intersects_region(bj, r))
-                            j_in_overlap = true;
-                        if (i_in_overlap || j_in_overlap)
-                            break;
+                        break;
                     }
-                    if (!i_in_overlap && !j_in_overlap)
+
+                    // Boxes originating from the same tile are never merged
+                    if (bi.tile_id >= 0 && bj.tile_id >= 0 && bi.tile_id == bj.tile_id)
                     {
-                        on_overlap_boundary = false;
+                        continue;
                     }
-                }
 
-                // If both boxes have valid tile_id, they must come from different tiles
-                if (bi.tile_id >= 0 && bj.tile_id >= 0 && bi.tile_id == bj.tile_id)
-                {
-                    on_overlap_boundary = false;
-                }
+                    // Check Y-axis bounding box overlap before computing DIoU
+                    if (diou_threshold > 0.0f)
+                    {
+                        if (bj.y + bj.h <= bi_y1 || bj.y >= bi_y2)
+                        {
+                            continue;
+                        }
+                    }
 
-                if (!on_overlap_boundary)
-                {
-                    continue;
-                }
-
-                float diou = calculate_diou(bi, bj);
-                if (diou >= diou_threshold)
-                {
-                    adj[i].push_back(j);
-                    adj[j].push_back(i);
+                    float diou = calculate_diou(bi, bj);
+                    if (diou >= diou_threshold)
+                    {
+                        adj[i].push_back(j);
+                        adj[j].push_back(i);
+                    }
                 }
             }
         }
@@ -306,6 +378,14 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
         {
             if (visited[i])
                 continue;
+
+            // If box is not on boundary or has no neighbors, it cannot merge with anything
+            if (!on_boundary[i] || adj[i].empty())
+            {
+                visited[i] = true;
+                result.push_back(cls_boxes[i]);
+                continue;
+            }
 
             std::vector<size_t> cluster_indices;
             std::queue<size_t> q;

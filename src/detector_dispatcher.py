@@ -40,6 +40,22 @@ except ImportError:
 
 logger = logging.getLogger("DetectorDispatcher")
 
+# Ensure NVIDIA cuDNN runtime libraries are accessible by ONNX Runtime if installed via pip
+try:
+    for _p in sys.path:
+        _cudnn_dir = Path(_p) / "nvidia" / "cudnn" / "lib"
+        if _cudnn_dir.exists():
+            import ctypes
+            for _lib_name in ["libcudnn.so.9", "libcudnn_ops.so.9", "libcudnn_cnn.so.9", "libcudnn_adv.so.9"]:
+                _lib_path = _cudnn_dir / _lib_name
+                if _lib_path.exists():
+                    try:
+                        ctypes.CDLL(str(_lib_path), mode=ctypes.RTLD_GLOBAL)
+                    except Exception:
+                        pass
+except Exception:
+    pass
+
 
 # =============================================================================
 # Unified Detection Data Structure
@@ -127,13 +143,17 @@ class BackendType(str, enum.Enum):
 GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 
 
+MIN_ENGINE_SIZE_BYTES: int = 1048576  # 1 MB
+
+
 def check_tensorrt_available(models_dir: Optional[Path] = None) -> bool:
-    """Check if TensorRT C++ SDK and NVIDIA GPU are present and functional.
+    """Check if TensorRT C++ SDK, NVIDIA GPU, and valid .engine plans are present.
 
     Looks for:
     1. C++ library artifacts (`libtrt_detector.so` or `trt_detector.pyd`).
     2. Python `tensorrt` module.
     3. CUDA-capable GPU.
+    4. Valid compiled .engine plan files (>= 1MB).
     """
     # 1. Check for shared library / pyd
     repo_root = Path(__file__).resolve().parent.parent
@@ -166,7 +186,18 @@ def check_tensorrt_available(models_dir: Optional[Path] = None) -> bool:
         # Fallback to checking cuda driver
         has_cuda = os.path.exists("/dev/nvidia0") or sys.platform == "win32"
 
-    return has_cuda
+    if not has_cuda:
+        return False
+
+    # 4. Check for valid compiled TensorRT engine files (>= 1MB)
+    m_dir = Path(models_dir) if models_dir is not None else repo_root / "models"
+    if m_dir.exists():
+        engine_files = list(m_dir.glob("*.engine"))
+        if engine_files and not any(f.stat().st_size >= MIN_ENGINE_SIZE_BYTES for f in engine_files):
+            logger.info("UnifiedDetector: All .engine files are stubs (<1MB). Bypassing TensorRT.")
+            return False
+
+    return True
 
 
 def is_windows_system() -> bool:
@@ -440,11 +471,11 @@ class UnifiedDetector:
         return session
 
     def _create_tensorrt_session(self, size: int) -> Any:
-        """Create a TensorRT engine session or fall back to ONNX if engine is missing."""
+        """Create a TensorRT engine session or fall back to ONNX if engine is missing or invalid."""
         engine_path = self.models_dir / f"yolo_{size}.engine"
-        if not engine_path.exists():
+        if not engine_path.exists() or engine_path.stat().st_size < MIN_ENGINE_SIZE_BYTES:
             logger.warning(
-                "UnifiedDetector: TensorRT engine %s not found. Falling back to ONNX Runtime.",
+                "UnifiedDetector: TensorRT engine %s not found or invalid size (< 1MB). Falling back to ONNX Runtime.",
                 engine_path,
             )
             self._backend = BackendType.ONNXRUNTIME

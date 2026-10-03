@@ -75,6 +75,7 @@ class TestInferenceWorker:
 
         with qtbot.waitSignal(worker.error_occurred, timeout=3000) as blocker:
             worker.start()
+        worker.wait(2000)
 
         error_msg = blocker.args[0]
         assert "Не вдалося завантажити зображення" in error_msg
@@ -101,6 +102,7 @@ class TestInferenceWorker:
 
         with qtbot.waitSignal(worker.detection_completed, timeout=8000) as blocker:
             worker.start()
+        worker.wait(2000)
 
         detections, elapsed_ms = blocker.args
         assert isinstance(detections, list)
@@ -141,6 +143,7 @@ class TestInferenceWorker:
 
         with qtbot.waitSignal(worker.detection_completed, timeout=5000) as blocker:
             worker.start()
+        worker.wait(2000)
 
         detections, elapsed_ms = blocker.args
         assert isinstance(detections, list)
