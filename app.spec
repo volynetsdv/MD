@@ -12,16 +12,18 @@ block_cipher = None
 repo_root = Path.cwd()
 
 # Data files to bundle
-datas = [
-    ("models/*.onnx", "models"),
-]
+datas = []
+models_dir = repo_root / "models"
+if models_dir.exists():
+    for m in sorted(models_dir.glob("*.onnx")):
+        datas.append((str(m), "models"))
 
-# Include compiled C++ binaries if present
-if (repo_root / "build").exists():
-    datas.append(("build/*.so", "."))
-    datas.append(("build/*.pyd", "."))
-    datas.append(("build/bindings/*.so", "bindings"))
-    datas.append(("build/bindings/*.pyd", "bindings"))
+# Include compiled C++ binaries if present (only existing files)
+for b_dir in [repo_root / "build", repo_root / "build" / "bindings", repo_root / "build" / "Release"]:
+    if b_dir.exists():
+        for ext in ("*.so", "*.pyd", "*.dll"):
+            for f in sorted(b_dir.glob(ext)):
+                datas.append((str(f), "."))
 
 # Hidden imports required by dynamic dispatch
 hiddenimports = [

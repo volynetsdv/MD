@@ -54,7 +54,15 @@ def build_cpp_core() -> bool:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(
-            [cmake_path, "-B", str(BUILD_DIR), "-S", str(REPO_ROOT), "-DCMAKE_BUILD_TYPE=Release"],
+            [
+                cmake_path,
+                "-B",
+                str(BUILD_DIR),
+                "-S",
+                str(REPO_ROOT),
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_CUDA_RUNTIME_LIBRARY=Shared",
+            ],
             check=True,
             cwd=str(REPO_ROOT),
         )
@@ -80,7 +88,7 @@ def run_pyinstaller(clean: bool = False) -> bool:
         )
         return False
 
-    cmd = [pyinstaller, "app.spec"]
+    cmd = [pyinstaller, "app.spec", "--noconfirm"]
     if clean:
         cmd.append("--clean")
 
@@ -118,8 +126,8 @@ def main() -> int:
         logger.info("=== Build Pipeline Finished Successfully ===")
         return 0
     else:
-        logger.info("=== Build Finished with Warnings (PyInstaller skipped or failed) ===")
-        return 0
+        logger.error("=== Build Pipeline Failed (PyInstaller error) ===")
+        return 1
 
 
 if __name__ == "__main__":
