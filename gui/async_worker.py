@@ -40,7 +40,7 @@ try:
     _pytiling_available = True
 except ImportError:
     repo_root = Path(__file__).resolve().parent.parent
-    for cand in [repo_root / "build", repo_root / "build" / "bindings"]:
+    for cand in [repo_root / "build", repo_root / "build" / "Release", repo_root / "build" / "bindings"]:
         if cand.exists() and str(cand) not in sys.path:
             sys.path.insert(0, str(cand))
             try:

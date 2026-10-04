@@ -27,7 +27,7 @@ try:
     _PyTilingDetection = getattr(pytiling_core, "Detection", None)
 except ImportError:
     repo_root = Path(__file__).resolve().parent.parent
-    for candidate in [repo_root / "build", repo_root / "build" / "bindings"]:
+    for candidate in [repo_root / "build", repo_root / "build" / "Release", repo_root / "build" / "bindings"]:
         if candidate.exists() and str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
             try:
@@ -443,6 +443,17 @@ class UnifiedDetector:
         import onnxruntime as ort
 
         model_path = self.models_dir / f"yolo_{size}.onnx"
+        if not model_path.exists():
+            logger.info(
+                "ONNX model %s not found on disk. Attempting automatic download from configured model_urls...",
+                model_path.name,
+            )
+            try:
+                from scripts.download_weights import ensure_single_model
+                ensure_single_model(model_path.name, self.models_dir)
+            except Exception as exc:
+                logger.warning("Failed to automatically acquire model %s: %s", model_path.name, exc)
+
         if not model_path.exists():
             raise FileNotFoundError(f"ONNX model file not found: {model_path}")
 

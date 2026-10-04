@@ -39,9 +39,11 @@ class TestAppConfig:
         assert cfg.window_geometry == ""
         assert cfg.splitter_state == ""
 
-        # Paths
+        # Paths & Models
         assert cfg.models_dir == "models"
         assert cfg.recent_dir == "data/sliced_dota/images/val"
+        assert "yolo_320.onnx" in cfg.model_urls
+        assert "yolo_640.onnx" in cfg.model_urls
 
     def test_save_and_load(self, tmp_path: Path):
         """Verify atomic JSON serialization and clean round-trip deserialization."""
@@ -128,3 +130,16 @@ class TestAppConfig:
 
         c3 = get_config(reload=True, path=cfg_file)
         assert c3.default_confidence == 0.40
+
+    def test_custom_model_urls(self, tmp_path: Path):
+        """Verify modifying and loading custom model_urls."""
+        cfg_file = tmp_path / "custom_models.json"
+        custom_urls = {
+            "custom_model.onnx": "https://example.com/custom.onnx"
+        }
+        cfg = AppConfig(model_urls=custom_urls)
+        cfg.save(cfg_file)
+
+        loaded = AppConfig.load(cfg_file)
+        assert loaded.model_urls == custom_urls
+        assert "custom_model.onnx" in loaded.model_urls

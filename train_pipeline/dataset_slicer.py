@@ -33,9 +33,11 @@ except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parent.parent
     candidate_paths = [
         repo_root / "build",
+        repo_root / "build" / "Release",
         repo_root / "build" / "bindings",
         repo_root / "bindings",
         Path.cwd() / "build",
+        Path.cwd() / "build" / "Release",
     ]
     imported = False
     for p in candidate_paths:

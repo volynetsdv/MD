@@ -5,6 +5,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 build_paths = [
     project_root / "build",
+    project_root / "build" / "Release",
     project_root / "build" / "bindings",
 ]
 for p in build_paths:

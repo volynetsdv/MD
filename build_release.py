@@ -30,6 +30,15 @@ def check_prerequisites() -> bool:
     """Verify that required models and configuration exist."""
     models_dir = REPO_ROOT / "models"
     required_models = ["yolo_320.onnx", "yolo_416.onnx", "yolo_512.onnx", "yolo_640.onnx"]
+    missing = [m for m in required_models if not (models_dir / m).exists()]
+    if missing:
+        logger.info("Missing model assets: %s. Ensuring models...", missing)
+        try:
+            from scripts.download_weights import ensure_models
+            ensure_models(models_dir)
+        except Exception as exc:
+            logger.warning("Could not auto-fetch models: %s", exc)
+
     for m in required_models:
         if not (models_dir / m).exists():
             logger.error("Missing required model asset: %s", models_dir / m)

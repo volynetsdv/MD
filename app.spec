@@ -25,6 +25,12 @@ for b_dir in [repo_root / "build", repo_root / "build" / "bindings", repo_root /
             for f in sorted(b_dir.glob(ext)):
                 datas.append((str(f), "."))
 
+# Include config files
+config_dir = repo_root / "config"
+if config_dir.exists():
+    for c in sorted(config_dir.glob("*.json")):
+        datas.append((str(c), "config"))
+
 # Hidden imports required by dynamic dispatch
 hiddenimports = [
     "PySide6.QtCore",
@@ -34,8 +40,13 @@ hiddenimports = [
     "onnxruntime",
     "cv2",
     "numpy",
+    "core.config_manager",
+    "core.metadata_cache",
+    "scripts.download_weights",
     "gui.canvas_viewer",
     "gui.main_window",
+    "gui.settings_dialog",
+    "gui.styles",
     "gui.async_worker",
     "src.detector_dispatcher",
 ]

@@ -141,6 +141,10 @@ class SettingsDialog(QDialog):
         row_recent.addWidget(btn_browse_recent)
         form_paths.addRow("Робоча папка знімків:", row_recent)
 
+        self.btn_download_models = QPushButton("Завантажити / Оновити ваги з релізу...", grp_paths)
+        self.btn_download_models.clicked.connect(self._download_models)
+        form_paths.addRow("Автозавантаження ваг:", self.btn_download_models)
+
         main_layout.addWidget(grp_paths)
 
         # 4. Action Buttons
@@ -176,6 +180,39 @@ class SettingsDialog(QDialog):
         )
         if p:
             self.txt_recent_dir.setText(p)
+
+    def _download_models(self) -> None:
+        """Download missing or updated weights from configured URLs."""
+        from PySide6.QtWidgets import QMessageBox
+
+        models_dir = self.txt_models_dir.text().strip() or "models"
+        self.btn_download_models.setEnabled(False)
+        self.btn_download_models.setText("Завантаження ваг...")
+        try:
+            from scripts.download_weights import ensure_models
+
+            success = ensure_models(models_dir=models_dir)
+            if success:
+                QMessageBox.information(
+                    self,
+                    "Завантаження ваг",
+                    f"Усі моделі успішно перевірено та готові до роботи в каталозі '{models_dir}'.",
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Завантаження ваг",
+                    "Не вдалося завантажити всі файли моделей. Перевірте підключення до мережі або URL-адреси.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Помилка завантаження",
+                f"Виникла помилка під час завантаження ваг:\n{exc}",
+            )
+        finally:
+            self.btn_download_models.setEnabled(True)
+            self.btn_download_models.setText("Завантажити / Оновити ваги з релізу...")
 
     def _on_reset_to_defaults(self) -> None:
         """Reset form controls to standard defaults."""

@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "settings.json"
 
+DEFAULT_MODEL_URLS: Dict[str, str] = {
+    "yolo_320.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_320.onnx",
+    "yolo_416.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_416.onnx",
+    "yolo_512.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_512.onnx",
+    "yolo_640.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_640.onnx",
+}
+
 
 @dataclass
 class AppConfig:
@@ -44,6 +51,7 @@ class AppConfig:
     # 4. Storage & Filesystem paths
     models_dir: str = "models"
     recent_dir: str = "data/sliced_dota/images/val"
+    model_urls: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODEL_URLS))
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
@@ -137,12 +145,17 @@ class AppConfig:
             if "splitter_state" in raw_data:
                 validated_data["splitter_state"] = str(raw_data["splitter_state"])
 
-            # Paths
+            # Paths & Models
             if "models_dir" in raw_data:
                 validated_data["models_dir"] = str(raw_data["models_dir"])
 
             if "recent_dir" in raw_data:
                 validated_data["recent_dir"] = str(raw_data["recent_dir"])
+
+            if "model_urls" in raw_data and isinstance(raw_data["model_urls"], dict):
+                validated_data["model_urls"] = {
+                    str(k): str(v) for k, v in raw_data["model_urls"].items()
+                }
 
             return cls(**validated_data)
 

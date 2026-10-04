@@ -77,6 +77,7 @@ def validate_tiling_core_dry() -> bool:
 
     candidate_paths = [
         REPO_ROOT / "build",
+        REPO_ROOT / "build" / "Release",
         REPO_ROOT / "build" / "bindings",
         REPO_ROOT / "bindings",
     ]

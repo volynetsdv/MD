@@ -25,6 +25,20 @@ def main() -> int:
     app.setApplicationName("Aerial Reconnaissance Workstation")
     app.setOrganizationName("Defense Intelligence Systems")
 
+    # Verify model weights availability (download if missing)
+    try:
+        from core.config_manager import get_config
+        from scripts.download_weights import ensure_models
+
+        cfg = get_config()
+        models_path = repo_root / cfg.models_dir
+        if not models_path.exists() or not any(models_path.glob("*.onnx")):
+            ensure_models(models_dir=models_path)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("Main").warning("Failed to auto-verify weights on startup: %s", exc)
+
     window = MainWindow()
     window.show()
 

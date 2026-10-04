@@ -188,10 +188,13 @@ target_link_libraries(pytiling_core PRIVATE
     postprocess
 )
 
-# Place the .so next to the build directory root so tests can import it without
+# Place the .so / .pyd next to the build directory root so tests can import it without
 # any PYTHONPATH surgery.
 set_target_properties(pytiling_core PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
 )
 
 # --- Python Tests (pytiling_core, dataset_slicer, export_profiles) ---

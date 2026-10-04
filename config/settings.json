@@ -15,5 +15,11 @@
     ],
     "splitter_state": "000000ff000000010000000300000122000003520000012c01ffffffff010000000100",
     "models_dir": "models",
-    "recent_dir": "data/sliced_dota/images/val"
+    "recent_dir": "data/sliced_dota/images/val",
+    "model_urls": {
+        "yolo_320.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_320.onnx",
+        "yolo_416.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_416.onnx",
+        "yolo_512.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_512.onnx",
+        "yolo_640.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_640.onnx"
+    }
 }
