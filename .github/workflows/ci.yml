@@ -44,7 +44,7 @@ jobs:
           cache-dependency-path: 'requirements.txt'
 
       # ================= LINUX DEPENDENCIES =================
-      - name: [Linux] Install system dependencies & headless Qt/XCB
+      - name: "[Linux] Install system dependencies & headless Qt/XCB"
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -57,7 +57,7 @@ jobs:
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-xfixes0
 
-      - name: [Linux] Configure ccache
+      - name: "[Linux] Configure ccache"
         if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
@@ -79,7 +79,7 @@ jobs:
           python scripts/download_weights.py
 
       # ================= BUILD (LINUX) =================
-      - name: [Linux] Build C++ core engine (CMake)
+      - name: "[Linux] Build C++ core engine (CMake)"
         if: runner.os == 'Linux'
         run: |
           ccache -z
@@ -92,7 +92,7 @@ jobs:
           ccache -s
 
       # ================= BUILD (WINDOWS) =================
-      - name: [Windows] Build C++ core engine (MSVC)
+      - name: "[Windows] Build C++ core engine (MSVC)"
         if: runner.os == 'Windows'
         run: |
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
@@ -116,13 +116,13 @@ jobs:
           python validate_system.py
 
       # ================= PACKAGING =================
-      - name: [Linux] Build Standalone Release Bundle & Archive
+      - name: "[Linux] Build Standalone Release Bundle & Archive"
         if: runner.os == 'Linux'
         run: |
           python build_release.py --skip-cpp --clean
           tar -czf dist/${{ matrix.archive_name }} -C dist AerialWorkstation
 
-      - name: [Windows] Build Standalone Release Bundle & Archive
+      - name: "[Windows] Build Standalone Release Bundle & Archive"
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
