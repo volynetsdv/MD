@@ -36,11 +36,18 @@ TilingConfig calculate_tiling_params(int image_width,
 {
     TilingConfig cfg;
 
+    const bool is_ultra_large = (image_width >= 5000 || image_height >= 5000);
+    const int effective_slice_size = is_ultra_large ? 736 : 640;
+
     // --- T_calc: larger VRAM & higher altitude → bigger tiles ---
     const float t_calc = static_cast<float>(vram_available_mb) / 4.0f + altitude * 10.0f;
 
     // --- Pick tile size from grid (largest ≤ T_calc) ---
     cfg.tile_size = pick_tile_size(t_calc);
+    if (cfg.tile_size == 640 && is_ultra_large)
+    {
+        cfg.tile_size = effective_slice_size;
+    }
 
     // --- Overlap: more altitude → more overlap, clamped [0.1, 0.4] ---
     cfg.overlap = clampf(0.1f + altitude / 500.0f, 0.1f, 0.4f);

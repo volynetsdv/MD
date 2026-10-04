@@ -410,7 +410,8 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
         pool.loadModel(640, opt.engine_640);
 
     const int target_size = tiling_cfg.tile_size;
-    TRTDetector *detector = pool.getDetector(target_size);
+    const int model_size = (target_size == 736) ? 640 : target_size;
+    TRTDetector *detector = pool.getDetector(model_size);
     if (!detector)
     {
         std::cerr << "[Pipeline] FATAL: unsupported tile size " << target_size << "\n";
@@ -420,7 +421,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
         return result;
     }
 
-    const bool has_engine = pool.hasLoadedEngine(target_size);
+    const bool has_engine = pool.hasLoadedEngine(model_size);
     if (!has_engine)
     {
         std::cerr << "[Pipeline] Notice: no engine loaded — "
@@ -440,7 +441,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
               << " tiles (max_tiles=" << opt.max_tiles << ", grid="
               << total_tiles << ")...\n";
 
-    const size_t tile_floats = static_cast<size_t>(3) * target_size * target_size;
+    const size_t tile_floats = static_cast<size_t>(3) * model_size * model_size;
     const size_t tile_bytes = tile_floats * sizeof(float);
     const int src_stride = opt.width * 3;
 
@@ -468,7 +469,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
         // 4b. Zero-copy bilinear extraction: src VRAM → slice VRAM
         err = extract_tile_gpu(d_src_img, src_stride, opt.width, opt.height,
-                               trect, target_size, d_slice);
+                               trect, model_size, d_slice);
         if (err != cudaSuccess)
         {
             std::cerr << "[Pipeline] WARN: extract_tile_gpu tile " << i << ": "
@@ -483,7 +484,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
         // Validation fallback: inject synthetic objects visible in this tile
         if (local_dets.empty() && !has_engine)
-            local_dets = generate_synthetic_tile_detections(tile, target_size);
+            local_dets = generate_synthetic_tile_detections(tile, model_size);
 
         // 4d. CRITICAL: immediately free tile slice from VRAM
         cudaFree(d_slice);
@@ -491,7 +492,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
         // 4e. Remap tile-local coordinates → global 8K frame coordinates
         std::vector<GlobalDetection> remapped =
-            remap_offsets(local_dets, tile, target_size, static_cast<int>(i));
+            remap_offsets(local_dets, tile, model_size, static_cast<int>(i));
         all_raw.insert(all_raw.end(), remapped.begin(), remapped.end());
 
         if (opt.verbose)

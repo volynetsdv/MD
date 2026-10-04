@@ -547,7 +547,7 @@ class UnifiedDetector:
         # 1. Preprocess input to normalized float32 NCHW (1, 3, H, W)
         input_array, in_h, in_w = self._preprocess_input(tile_tensor_or_numpy)
 
-        target_size = self._snap_resolution(tile_size or in_h)
+        target_size = self._snap_resolution(640 if tile_size == 736 else (tile_size or in_h))
 
         # Resize if dimensions differ from model input
         if (in_h != target_size) or (in_w != target_size):
@@ -563,10 +563,16 @@ class UnifiedDetector:
         raw_output = self._run_inference(session, input_array, target_size)
 
         # 3. Decode output and apply NMS
+        # For 736px slices, detections stay in 640px model space for host-device offset mapping
+        decode_orig_size = (
+            (target_size, target_size)
+            if (tile_size == 736 or (in_h == 736 and in_w == 736))
+            else (in_w, in_h)
+        )
         detections = self._decode_yolo_output(
             raw_output=raw_output,
             model_size=target_size,
-            original_size=(in_w, in_h),
+            original_size=decode_orig_size,
             conf_threshold=conf_threshold,
             iou_threshold=iou_threshold,
         )

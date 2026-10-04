@@ -78,6 +78,9 @@ def py_calculate_tiling_params(
     width: int, height: int, altitude: float, vram_mb: int
 ) -> Tuple[int, List[Rect]]:
     """Python fallback for calculate_tiling_params if C++ module is unavailable."""
+    is_ultra_large = width >= 5000 or height >= 5000
+    effective_slice_size = 736 if is_ultra_large else 640
+
     grid = [320, 416, 512, 640]
     t_calc = (vram_mb / 4.0) + (altitude * 10.0)
 
@@ -87,6 +90,9 @@ def py_calculate_tiling_params(
         if s <= math.floor(t_calc):
             tile_size = s
             break
+
+    if tile_size == 640 and is_ultra_large:
+        tile_size = effective_slice_size
 
     # Overlap clamped [0.1, 0.4]
     overlap = max(0.1, min(0.4, 0.1 + (altitude / 500.0)))
@@ -340,17 +346,20 @@ class InferenceWorker(QThread):
                 self.error_occurred.emit("Помилка генерації сітки плиток: отримано 0 тайлів.")
                 return
 
+            model_size = 640 if tile_size == 736 else tile_size
+
             logger.info(
-                "InferenceWorker: Generated %d tiles with model size %d (Alt: %.1fm, VRAM: %dMB).",
+                "InferenceWorker: Generated %d tiles with tile size %d (model size %d, Alt: %.1fm, VRAM: %dMB).",
                 total_tiles,
                 tile_size,
+                model_size,
                 self.altitude,
                 self.vram_mb,
             )
             self.progress_changed.emit(
                 0,
                 total_tiles,
-                f"Розраховано сітку: {total_tiles} тайлів (модель yolo_{tile_size}). Початок детекції...",
+                f"Розраховано сітку: {total_tiles} тайлів (модель yolo_{model_size}). Початок детекції...",
             )
 
             # 3. Initialize Unified Detector if not provided
@@ -372,12 +381,18 @@ class InferenceWorker(QThread):
                 tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
                 tile_slice = img[ty : ty + th, tx : tx + tw]
 
+                # Bilinear resize to 640x640 exclusively for 736px tiles
+                if tw == 736 and th == 736:
+                    tile_slice = cv2.resize(
+                        tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+                    )
+
                 # Run inference on tile
                 tile_dets = []
                 if self.is_mock:
                     # In mock testing mode, check intersection with synthetic targets
-                    scale_x = float(tile_size) / float(tile.w)
-                    scale_y = float(tile_size) / float(tile.h)
+                    scale_x = float(model_size) / float(tile.w)
+                    scale_y = float(model_size) / float(tile.h)
                     for st in SYNTHETIC_TARGETS:
                         if (
                             st["gx"] + st["gw"] > tile.x
@@ -400,7 +415,7 @@ class InferenceWorker(QThread):
                 else:
                     tile_dets = self.detector.predict_tile(
                         tile_slice,
-                        tile_size=tile_size,
+                        tile_size=model_size,
                         conf_threshold=self.conf_threshold,
                     )
 
@@ -409,7 +424,7 @@ class InferenceWorker(QThread):
 
                 # Remap tile-local detections to global frame coordinates
                 for d in tile_dets:
-                    global_det = self._remap_detection(d, tile, tile_size, idx)
+                    global_det = self._remap_detection(d, tile, model_size, idx)
                     all_global_detections.append(global_det)
 
                 # Real-time progress signal
@@ -718,6 +733,8 @@ def run_tiled_inference(
     if total_tiles == 0:
         return []
 
+    model_size = 640 if tile_size == 736 else tile_size
+
     if detector is None:
         detector = UnifiedDetector()
 
@@ -726,10 +743,16 @@ def run_tiled_inference(
         tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
         tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
 
+        # Bilinear resize to 640x640 exclusively for 736px tiles
+        if tw == 736 and th == 736:
+            tile_slice = cv2.resize(
+                tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+            )
+
         tile_dets = []
         if is_mock:
-            scale_x = float(tile_size) / float(tile.w)
-            scale_y = float(tile_size) / float(tile.h)
+            scale_x = float(model_size) / float(tile.w)
+            scale_y = float(model_size) / float(tile.h)
             for st in SYNTHETIC_TARGETS:
                 if (
                     st["gx"] + st["gw"] > tile.x
@@ -751,14 +774,14 @@ def run_tiled_inference(
         else:
             tile_dets = detector.predict_tile(
                 tile_slice,
-                tile_size=tile_size,
+                tile_size=model_size,
                 conf_threshold=conf_threshold,
             )
 
         del tile_slice
 
         for d in tile_dets:
-            global_det = remap_detection_to_global(d, tile, tile_size, idx)
+            global_det = remap_detection_to_global(d, tile, model_size, idx)
             all_global_detections.append(global_det)
 
         if progress_callback:

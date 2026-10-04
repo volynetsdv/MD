@@ -147,6 +147,7 @@ def profile_batch_pipeline(
         # Phase 2: Tiling calculation
         t0 = time.perf_counter()
         tile_size, tiles = calculate_tiles_for_image(img_w, img_h, altitude, vram_mb)
+        model_size = 640 if tile_size == 736 else tile_size
         num_tiles = len(tiles)
         t_tile_plan = time.perf_counter() - t0
 
@@ -156,14 +157,18 @@ def profile_batch_pipeline(
         for tile_idx, tile in enumerate(tiles):
             tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
             tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
+            if tw == 736 and th == 736:
+                tile_slice = cv2.resize(
+                    tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+                )
             tile_dets = detector.predict_tile(
                 tile_slice,
-                tile_size=tile_size,
+                tile_size=model_size,
                 conf_threshold=conf_thresh,
             )
             del tile_slice
             for d in tile_dets:
-                all_global_detections.append(remap_detection_to_global(d, tile, tile_size, tile_idx))
+                all_global_detections.append(remap_detection_to_global(d, tile, model_size, tile_idx))
         t_infer = time.perf_counter() - t0
         del img_rgb
 
