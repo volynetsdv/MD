@@ -780,47 +780,15 @@ class MainWindow(QMainWindow):
         scroll_layout.setContentsMargins(4, 4, 4, 4)
         scroll_layout.setSpacing(4)
 
-        for class_id, class_name in DEFAULT_CLASS_NAMES.items():
-            color = get_class_color(class_id)
-            chk = QCheckBox(f"[{class_id:02d}] {class_name}", scroll_content)
-            chk.setChecked(True)
-            chk.setStyleSheet(
-                f"QCheckBox {{ "
-                f"    color: #e2e8f0; "
-                f"    font-weight: 500; "
-                f"    font-size: 12px; "
-                f"    spacing: 8px; "
-                f"    padding: 3px 6px; "
-                f"    border-radius: 3px; "
-                f"    background-color: transparent; "
-                f"}} "
-                f"QCheckBox:hover {{ "
-                f"    background-color: #0f1d3a; "
-                f"    color: #ffffff; "
-                f"}} "
-                f"QCheckBox::indicator {{ "
-                f"    width: 14px; "
-                f"    height: 14px; "
-                f"    border: 2px solid {color.name()}; "
-                f"    border-radius: 3px; "
-                f"    background-color: #080f1e; "
-                f"}} "
-                f"QCheckBox::indicator:hover {{ "
-                f"    border-color: #38bdf8; "
-                f"}} "
-                f"QCheckBox::indicator:checked {{ "
-                f"    background-color: {color.name()}; "
-                f"    border-color: {color.name()}; "
-                f"}}"
-            )
-            chk.toggled.connect(
-                lambda checked, cid=class_id: self.canvas.set_class_visibility(cid, checked)
-            )
-            self._class_checkboxes[class_id] = chk
-            scroll_layout.addWidget(chk)
+        self.scroll_classes = scroll_classes
+        self.scroll_classes_content = scroll_content
+        self.scroll_classes_layout = scroll_layout
 
         scroll_classes.setWidget(scroll_content)
         layout_filter.addWidget(scroll_classes)
+
+        # Initialize class checkboxes dynamically with fallback
+        self.update_class_names(dict(DEFAULT_CLASS_NAMES))
 
         main_layout.addWidget(grp_filter)
 
@@ -852,6 +820,71 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(grp_targets, stretch=1)
 
         return panel
+
+    def update_class_names(self, class_names: Optional[Dict[int, str]] = None) -> None:
+        """Dynamically update class names in CanvasViewer and regenerate filter checkboxes in UI."""
+        if not class_names:
+            try:
+                if self._shared_detector is not None:
+                    class_names = self._shared_detector.get_class_names()
+            except Exception as exc:
+                logger.warning("Failed to obtain class names from detector: %s", exc)
+
+        if not class_names:
+            class_names = dict(DEFAULT_CLASS_NAMES)
+
+        # 1. Update CanvasViewer
+        self.canvas.set_class_names(class_names)
+
+        # 2. Clear existing checkboxes from layout
+        if hasattr(self, "scroll_classes_layout"):
+            while self.scroll_classes_layout.count() > 0:
+                item = self.scroll_classes_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+            self._class_checkboxes.clear()
+
+            # 3. Create new checkboxes for each class
+            for class_id, class_name in sorted(class_names.items()):
+                color = get_class_color(class_id)
+                chk = QCheckBox(f"[{class_id:02d}] {class_name}", self.scroll_classes_content)
+                chk.setChecked(True)
+                chk.setStyleSheet(
+                    f"QCheckBox {{ "
+                    f"    color: #e2e8f0; "
+                    f"    font-weight: 500; "
+                    f"    font-size: 12px; "
+                    f"    spacing: 8px; "
+                    f"    padding: 3px 6px; "
+                    f"    border-radius: 3px; "
+                    f"    background-color: transparent; "
+                    f"}} "
+                    f"QCheckBox:hover {{ "
+                    f"    background-color: #0f1d3a; "
+                    f"    color: #ffffff; "
+                    f"}} "
+                    f"QCheckBox::indicator {{ "
+                    f"    width: 14px; "
+                    f"    height: 14px; "
+                    f"    border: 2px solid {color.name()}; "
+                    f"    border-radius: 3px; "
+                    f"    background-color: #080f1e; "
+                    f"}} "
+                    f"QCheckBox::indicator:hover {{ "
+                    f"    border-color: #38bdf8; "
+                    f"}} "
+                    f"QCheckBox::indicator:checked {{ "
+                    f"    background-color: {color.name()}; "
+                    f"    border-color: {color.name()}; "
+                    f"}}"
+                )
+                chk.toggled.connect(
+                    lambda checked, cid=class_id: self.canvas.set_class_visibility(cid, checked)
+                )
+                self._class_checkboxes[class_id] = chk
+                self.scroll_classes_layout.addWidget(chk)
 
     def _select_all_classes(self) -> None:
         """Enable all class checkboxes."""
@@ -1110,6 +1143,10 @@ class MainWindow(QMainWindow):
         """Get or initialize the shared UnifiedDetector instance for the workstation."""
         if self._shared_detector is None:
             self._shared_detector = UnifiedDetector()
+            try:
+                self.update_class_names(self._shared_detector.get_class_names())
+            except Exception as exc:
+                logger.warning("Failed to sync class names from shared detector: %s", exc)
         return self._shared_detector
 
     def get_batch_detector(self) -> UnifiedDetector:
@@ -1155,13 +1192,15 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.status_bar.showMessage("Ініціалізація інференсу...")
 
+        shared_det = self.get_shared_detector()
         # Asynchronous inference worker
         self._worker = InferenceWorker(
             image_source=image_source,
             altitude=alt,
             vram_mb=vram,
             conf_threshold=conf_thresh,
-            detector=self.get_shared_detector(),
+            detector=shared_det,
+            class_names=shared_det.get_class_names() if hasattr(shared_det, "get_class_names") else None,
             is_mock=self._is_mock_image,
             parent=self,
         )
@@ -1344,13 +1383,15 @@ class MainWindow(QMainWindow):
                 pass
             self._batch_worker.cancel()
 
+        batch_det = self.get_batch_detector()
         self._batch_worker = BatchTriageWorker(
             input_folder=str(input_p),
             output_folder=str(output_folder),
             altitude=alt,
             vram_mb=vram,
             conf_threshold=conf_thresh,
-            detector=self.get_batch_detector(),
+            detector=batch_det,
+            class_names=batch_det.get_class_names() if hasattr(batch_det, "get_class_names") else None,
             parent=self,
         )
         self._batch_worker.progress_changed.connect(self._on_batch_progress)

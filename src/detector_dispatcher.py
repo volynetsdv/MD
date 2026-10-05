@@ -59,6 +59,90 @@ except Exception:
 
 
 # =============================================================================
+# Default & Fallback Model Class Names (DOTA 1.5 - 16 Classes)
+# =============================================================================
+DEFAULT_CLASS_NAMES: Dict[int, str] = {
+    0: "Літак (plane)",
+    1: "Судно / Корабель (ship)",
+    2: "Резервуар (storage tank)",
+    3: "Бейсбольне поле (baseball diamond)",
+    4: "Тенісний корт (tennis court)",
+    5: "Баскетбольний майданчик (basketball court)",
+    6: "Бігова доріжка / Стадіон (ground track field)",
+    7: "Гавань / Порт (harbor)",
+    8: "Міст (bridge)",
+    9: "Великогабаритний транспорт (large vehicle)",
+    10: "Малогабаритний транспорт (small vehicle)",
+    11: "Гелікоптер (helicopter)",
+    12: "Кільцева розв'язка (roundabout)",
+    13: "Футбольне поле (soccer ball field)",
+    14: "Басейн (swimming pool)",
+    15: "Портовий кран (container crane)",
+}
+
+
+def _parse_names_metadata(raw_names: Any) -> Optional[Dict[int, str]]:
+    """Parse YOLO names metadata from string, dict, or list representation."""
+    if not raw_names:
+        return None
+    parsed: Any = None
+    if isinstance(raw_names, dict):
+        parsed = raw_names
+    elif isinstance(raw_names, (list, tuple)):
+        return {i: str(v) for i, v in enumerate(raw_names)}
+    elif isinstance(raw_names, str):
+        try:
+            import json
+
+            parsed = json.loads(raw_names)
+        except Exception:
+            pass
+        if parsed is None:
+            try:
+                import ast
+
+                parsed = ast.literal_eval(raw_names)
+            except Exception:
+                pass
+        if parsed is None:
+            try:
+                import yaml
+
+                parsed = yaml.safe_load(raw_names)
+            except Exception:
+                pass
+
+    if isinstance(parsed, dict) and parsed:
+        return {int(k): str(v) for k, v in parsed.items()}
+    elif isinstance(parsed, (list, tuple)) and parsed:
+        return {i: str(v) for i, v in enumerate(parsed)}
+    return None
+
+
+def _try_load_yaml_class_names(models_dir: Path) -> Optional[Dict[int, str]]:
+    """Attempt loading class names from dataset.yaml in models_dir or common data dirs."""
+    candidates = [
+        models_dir / "dataset.yaml",
+        models_dir.parent / "data" / "sliced_dota" / "dataset.yaml",
+        models_dir.parent / "data" / "dota_sliced.yaml",
+    ]
+    for c in candidates:
+        if c.exists():
+            try:
+                import yaml
+
+                with open(c, "r", encoding="utf-8") as f:
+                    ydata = yaml.safe_load(f)
+                if isinstance(ydata, dict) and "names" in ydata:
+                    res = _parse_names_metadata(ydata["names"])
+                    if res:
+                        return res
+            except Exception:
+                pass
+    return None
+
+
+# =============================================================================
 # Unified Detection Data Structure
 # =============================================================================
 class Detection:
@@ -353,6 +437,11 @@ class InferenceBackend(abc.ABC):
         """Execute forward pass on normalized NCHW float32 input."""
         ...
 
+    @abc.abstractmethod
+    def get_class_names(self) -> Dict[int, str]:
+        """Retrieve class ID to name dictionary from active model metadata or fallback."""
+        ...
+
 
 class TensorRTBackend(InferenceBackend):
     """Inference strategy utilizing NVIDIA TensorRT C++ SDK execution plans (.engine)."""
@@ -368,6 +457,29 @@ class TensorRTBackend(InferenceBackend):
     @property
     def is_gpu_accelerated(self) -> bool:
         return True
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Attempt to extract class names from companion ONNX model or dataset.yaml, else fallback."""
+        for sz in (640, 512, 416, 320):
+            onnx_path = self.models_dir / f"yolo_{sz}.onnx"
+            if onnx_path.exists():
+                try:
+                    import onnxruntime as ort
+
+                    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+                    meta = sess.get_modelmeta().custom_metadata_map
+                    if meta and "names" in meta:
+                        parsed = _parse_names_metadata(meta["names"])
+                        if parsed:
+                            return parsed
+                except Exception:
+                    pass
+
+        yaml_names = _try_load_yaml_class_names(self.models_dir)
+        if yaml_names:
+            return yaml_names
+
+        return dict(DEFAULT_CLASS_NAMES)
 
     def get_session(self, size: int) -> Any:
         """Load and cache a TensorRT engine execution context."""
@@ -432,6 +544,37 @@ class ONNXRuntimeBackendBase(InferenceBackend):
     @property
     def providers(self) -> List[str]:
         return self._providers
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Extract class names from ONNX model metadata with fallback."""
+        session = None
+        for sz in (640, 512, 416, 320):
+            if sz in self._sessions:
+                session = self._sessions[sz]
+                break
+        if session is None:
+            for sz in (640, 512, 416, 320):
+                try:
+                    session = self.get_session(sz)
+                    break
+                except Exception:
+                    continue
+
+        if session is not None and hasattr(session, "get_modelmeta"):
+            try:
+                meta = session.get_modelmeta().custom_metadata_map
+                if meta and "names" in meta:
+                    parsed = _parse_names_metadata(meta["names"])
+                    if parsed:
+                        return parsed
+            except Exception as exc:
+                logger.debug("Failed to read class names from ONNX metadata: %s", exc)
+
+        yaml_names = _try_load_yaml_class_names(self.models_dir)
+        if yaml_names:
+            return yaml_names
+
+        return dict(DEFAULT_CLASS_NAMES)
 
     def get_session(self, size: int) -> Any:
         """Create and cache an ONNX Runtime InferenceSession."""
@@ -718,6 +861,27 @@ class UnifiedDetector:
         """Pre-warm and cache inference sessions for all supported resolutions."""
         for size in GRID_RESOLUTIONS:
             self.get_session(size)
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Retrieve class ID to name dictionary from active backend with fallback to DEFAULT_CLASS_NAMES."""
+        if hasattr(self, "_custom_class_names") and self._custom_class_names:
+            return dict(self._custom_class_names)
+        if hasattr(self, "model") and hasattr(self.model, "names") and self.model.names:
+            parsed = _parse_names_metadata(self.model.names)
+            if parsed:
+                return parsed
+
+        names = self._backend_strategy.get_class_names()
+        if names:
+            return names
+        return dict(DEFAULT_CLASS_NAMES)
+
+    def set_class_names(self, names: Optional[Dict[int, str]]) -> None:
+        """Explicitly override class names dictionary."""
+        if names:
+            self._custom_class_names = {int(k): str(v) for k, v in names.items()}
+        else:
+            self._custom_class_names = dict(DEFAULT_CLASS_NAMES)
 
     # --------------------------------------------------------------------------
     # Inference & Output Decoding

@@ -280,6 +280,7 @@ class InferenceWorker(QThread):
         detector: Optional[UnifiedDetector] = None,
         is_mock: bool = False,
         parent: Optional[QObject] = None,
+        class_names: Optional[Dict[int, str]] = None,
     ) -> None:
         super().__init__(parent)
         self.image_source = image_source
@@ -289,8 +290,20 @@ class InferenceWorker(QThread):
         self.diou_threshold = float(diou_threshold)
         self.detector = detector
         self.is_mock = is_mock
+        self.class_names = dict(class_names) if class_names else None
 
         self._is_cancelled: bool = False
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Retrieve active class ID to name dictionary with fallback."""
+        if self.class_names:
+            return dict(self.class_names)
+        if self.detector is not None and hasattr(self.detector, "get_class_names"):
+            try:
+                return self.detector.get_class_names()
+            except Exception:
+                pass
+        return dict(DEFAULT_CLASS_NAMES)
 
     def cancel(self) -> None:
         """Request thread cancellation."""
@@ -299,26 +312,6 @@ class InferenceWorker(QThread):
 
     def is_cancelled(self) -> bool:
         return self._is_cancelled
-
-    def _format_results_for_gui(self, detections: list) -> list:
-        """Format detection results (list of objects or dictionaries)
-        into a standardized format for CanvasViewer and target table.
-        """
-        formatted = []
-        for det in detections:
-            if isinstance(det, dict):
-                formatted.append(det)
-            elif hasattr(det, "to_dict"):
-                formatted.append(det.to_dict())
-            elif isinstance(det, (list, tuple)) and len(det) >= 6:
-                # Format: [x1, y1, x2, y2, conf, class_id]
-                x1, y1, x2, y2, conf, cls_id = det[:6]
-                formatted.append({
-                    "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-                    "confidence": float(conf),
-                    "class_id": int(cls_id)
-                })
-        return formatted
 
     def run(self) -> None:
         """Execute image loading, tiling, inference, offset remapping, and NMS."""
@@ -568,7 +561,7 @@ class InferenceWorker(QThread):
 
     def _format_results_for_gui(self, detections: List[Any]) -> List[Dict[str, Any]]:
         """Convert global detection objects to clean dictionary representations."""
-        return format_detections_for_gui(detections)
+        return format_detections_for_gui(detections, class_names=self.get_class_names())
 
 
 def calculate_tiles_for_image(
@@ -670,13 +663,17 @@ def merge_boundary_detections(
     )
 
 
-def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
+def format_detections_for_gui(
+    detections: List[Any],
+    class_names: Optional[Dict[int, str]] = None,
+) -> List[Dict[str, Any]]:
     """Convert global detection objects to clean dictionary representations."""
+    active_names = class_names if class_names is not None else DEFAULT_CLASS_NAMES
     results: List[Dict[str, Any]] = []
     for i, det in enumerate(detections):
         if isinstance(det, dict):
             class_id = int(det.get("class_id", 0))
-            class_name = str(det.get("class_name", DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")))
+            class_name = str(det.get("class_name", active_names.get(class_id, f"Клас {class_id}")))
             conf = float(det.get("confidence", det.get("conf", 0.0)))
             if "bbox" in det and isinstance(det["bbox"], (list, tuple)) and len(det["bbox"]) == 4:
                 x = round(float(det["bbox"][0]), 2)
@@ -688,9 +685,27 @@ def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
                 y = round(float(det.get("y", 0.0)), 2)
                 w = round(float(det.get("w", 0.0)), 2)
                 h = round(float(det.get("h", 0.0)), 2)
+        elif hasattr(det, "to_dict"):
+            d_dict = det.to_dict()
+            class_id = int(d_dict.get("class_id", 0))
+            class_name = str(d_dict.get("class_name", active_names.get(class_id, f"Клас {class_id}")))
+            conf = float(d_dict.get("confidence", d_dict.get("conf", 0.0)))
+            x = round(float(d_dict.get("x", 0.0)), 2)
+            y = round(float(d_dict.get("y", 0.0)), 2)
+            w = round(float(d_dict.get("w", 0.0)), 2)
+            h = round(float(d_dict.get("h", 0.0)), 2)
+        elif isinstance(det, (list, tuple)) and len(det) >= 6:
+            x1, y1, x2, y2, conf_val, cls_id = det[:6]
+            class_id = int(cls_id)
+            class_name = active_names.get(class_id, f"Клас {class_id}")
+            x = round(float(x1), 2)
+            y = round(float(y1), 2)
+            w = round(float(x2 - x1), 2)
+            h = round(float(y2 - y1), 2)
+            conf = float(conf_val)
         else:
             class_id = int(det.class_id)
-            class_name = DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")
+            class_name = active_names.get(class_id, f"Клас {class_id}")
             x = round(float(det.x), 2)
             y = round(float(det.y), 2)
             w = round(float(det.w), 2)
@@ -724,6 +739,7 @@ def run_tiled_inference(
     is_mock: bool = False,
     is_cancelled_fn: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    class_names: Optional[Dict[int, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Execute complete tiled detection pipeline on an image buffer."""
     img_h, img_w = img_rgb.shape[:2]
@@ -790,7 +806,13 @@ def run_tiled_inference(
     merged_detections = merge_boundary_detections(
         all_global_detections, tiles, diou_threshold=diou_threshold, conf_threshold=conf_threshold
     )
-    return format_detections_for_gui(merged_detections)
+    cnames = class_names
+    if cnames is None and detector is not None and hasattr(detector, "get_class_names"):
+        try:
+            cnames = detector.get_class_names()
+        except Exception:
+            pass
+    return format_detections_for_gui(merged_detections, class_names=cnames)
 
 
 # Re-export BatchTriageWorker for convenience
