@@ -301,9 +301,8 @@ class InferenceWorker(QThread):
         return self._is_cancelled
 
     def _format_results_for_gui(self, detections: list) -> list:
-        """
-        Форматує результати виявлення (список об'єктів або словників)
-        у стандартизований формат для передачі у CanvasViewer та таблицю цілей.
+        """Format detection results (list of objects or dictionaries)
+        into a standardized format for CanvasViewer and target table.
         """
         formatted = []
         for det in detections:
@@ -312,7 +311,7 @@ class InferenceWorker(QThread):
             elif hasattr(det, "to_dict"):
                 formatted.append(det.to_dict())
             elif isinstance(det, (list, tuple)) and len(det) >= 6:
-                # Формат: [x1, y1, x2, y2, conf, class_id]
+                # Format: [x1, y1, x2, y2, conf, class_id]
                 x1, y1, x2, y2, conf, cls_id = det[:6]
                 formatted.append({
                     "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],

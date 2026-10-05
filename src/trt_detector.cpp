@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 
-// 1. Кастомний логер TensorRT (замкнений у цьому файлі)
+// 1. Custom TensorRT Logger (file-scoped)
 class Logger : public nvinfer1::ILogger
 {
     void log(Severity severity, const char *msg) noexcept override
@@ -18,7 +18,7 @@ class Logger : public nvinfer1::ILogger
     }
 } gLogger;
 
-// RAII Deleter для об'єктів TensorRT замість застарілого .destroy()
+// RAII Deleter for TensorRT objects replacing legacy .destroy()
 struct TRTDeleter
 {
     template <typename T>
@@ -26,7 +26,7 @@ struct TRTDeleter
     {
         if (obj)
         {
-            delete obj; // Новий стандарт TensorRT API
+            delete obj; // Modern standard TensorRT API
         }
     }
 };
@@ -59,7 +59,7 @@ TRTDetector::~TRTDetector()
 
 bool TRTDetector::loadEngine(const std::string &engine_path)
 {
-    // 1. Зчитування файлу .engine у бінарному режимі
+    // 1. Read .engine file in binary mode
     std::ifstream file(engine_path, std::ios::binary);
     if (!file.good())
     {
@@ -75,7 +75,7 @@ bool TRTDetector::loadEngine(const std::string &engine_path)
     file.read(engine_data.data(), size);
     file.close();
 
-    // 2. Ініціалізація Runtime
+    // 2. Initialize Runtime
     pImpl_->runtime.reset(nvinfer1::createInferRuntime(gLogger));
     if (!pImpl_->runtime)
     {
@@ -83,7 +83,7 @@ bool TRTDetector::loadEngine(const std::string &engine_path)
         return false;
     }
 
-    // 3. Десеріалізація CUDA Engine
+    // 3. Deserialize CUDA Engine
     pImpl_->engine.reset(pImpl_->runtime->deserializeCudaEngine(engine_data.data(), size));
     if (!pImpl_->engine)
     {
@@ -91,7 +91,7 @@ bool TRTDetector::loadEngine(const std::string &engine_path)
         return false;
     }
 
-    // 4. Створення контексту виконання (Execution Context)
+    // 4. Create Execution Context
     pImpl_->context.reset(pImpl_->engine->createExecutionContext());
     if (!pImpl_->context)
     {
@@ -99,14 +99,14 @@ bool TRTDetector::loadEngine(const std::string &engine_path)
         return false;
     }
 
-    // 5. Автоматичне розрахування розмірів входів/виходів VRAM (через I/O Tensor API)
+    // 5. Automatic VRAM input/output dimension calculation (via I/O Tensor API)
     const char *input_name = pImpl_->engine->getIOTensorName(0);
     const char *output_name = pImpl_->engine->getIOTensorName(1);
 
     auto in_dims = pImpl_->engine->getTensorShape(input_name);
     auto out_dims = pImpl_->engine->getTensorShape(output_name);
 
-    // Розрахунок розміру тензора у байтах: batch * C * H * W * sizeof(float)
+    // Compute tensor size in bytes: batch * C * H * W * sizeof(float)
     size_t in_elements = 1;
     for (int i = 0; i < in_dims.nbDims; ++i)
         in_elements *= in_dims.d[i];
@@ -117,7 +117,7 @@ bool TRTDetector::loadEngine(const std::string &engine_path)
         out_elements *= out_dims.d[i];
     pImpl_->output_size = out_elements * sizeof(float);
 
-    // 6. Виділення VRAM під вихідний буфер
+    // 6. Allocate VRAM for output buffer
     if (pImpl_->d_output)
         cudaFree(pImpl_->d_output);
     cudaMalloc(&pImpl_->d_output, pImpl_->output_size);
@@ -131,21 +131,21 @@ std::vector<Detection> TRTDetector::infer(const float *d_input_tensor)
     if (!pImpl_->engine || !pImpl_->context)
         return detections;
 
-    // Оновлений TensorRT I/O Tensor API (Замість застарілих Bindings)
+    // Modern TensorRT I/O Tensor API (replacing legacy Bindings)
     const char *input_name = pImpl_->engine->getIOTensorName(0);
     const char *output_name = pImpl_->engine->getIOTensorName(1);
 
-    // Встановлюємо адреси тензорів у VRAM
+    // Bind VRAM tensor addresses
     pImpl_->context->setTensorAddress(input_name, const_cast<float *>(d_input_tensor));
     pImpl_->context->setTensorAddress(output_name, pImpl_->d_output);
 
-    // Запуск асинхронного або синхронного інференсу
+    // Launch asynchronous or synchronous inference
     pImpl_->context->enqueueV3(0);
 
     return detections;
 }
 
-// Повертає обсяг пам'яті у байтах, виділений під вхідний та вихідний буфери TensorRT
+// Returns device memory in bytes allocated for TensorRT input and output buffers
 size_t TRTDetector::getDeviceMemoryUsage() const
 {
     if (!pImpl_)
