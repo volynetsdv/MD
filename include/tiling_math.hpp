@@ -20,6 +20,12 @@ struct TilingConfig
     std::vector<Rect> tiles;
 };
 
+/**
+ * @brief Calculate dynamic hardware-aware tiling parameters.
+ *
+ * For ultra-large images (max(W, H) >= 5000px), adaptively scales the tile window
+ * up to 736px for inference on 640px models.
+ */
 TilingConfig calculate_tiling_params(int image_width,
                                      int image_height,
                                      float altitude,

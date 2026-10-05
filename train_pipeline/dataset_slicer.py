@@ -1055,9 +1055,9 @@ class AerialDatasetSlicer:
             fmt_display = resolved_fmt.upper()
 
         telemetry_lines = [
-            f"[INFO] Знайдено зображень: {total_images}",
-            f"[INFO] Знайдено відповідних файлів анотацій: {found_labels_count}",
-            f"[INFO] Визначено формат розмітки: {fmt_display}",
+            f"[INFO] Images found: {total_images}",
+            f"[INFO] Matching annotation files found: {found_labels_count}",
+            f"[INFO] Detected annotation format: {fmt_display}",
         ]
         for t_line in telemetry_lines:
             print(t_line)

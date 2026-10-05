@@ -7,6 +7,7 @@ by automatically falling back to DirectML (DmlExecutionProvider), CUDA, or CPU.
 
 from __future__ import annotations
 
+import abc
 import enum
 import logging
 import os
@@ -305,13 +306,303 @@ def nms_fast(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> Lis
 
 
 # =============================================================================
+# Inference Backend Strategy Hierarchy
+# =============================================================================
+class InferenceBackend(abc.ABC):
+    """Abstract Strategy base class for inference backend engines."""
+
+    def __init__(self, models_dir: Path) -> None:
+        self.models_dir = Path(models_dir)
+        self._sessions: Dict[int, Any] = {}
+
+    @property
+    @abc.abstractmethod
+    def name(self) -> BackendType:
+        """Return backend type (TensorRT or ONNXRuntime)."""
+        ...
+
+    @property
+    @abc.abstractmethod
+    def execution_provider(self) -> str:
+        """Return active execution provider identifier."""
+        ...
+
+    @property
+    @abc.abstractmethod
+    def is_gpu_accelerated(self) -> bool:
+        """Indicate whether the backend leverages hardware GPU acceleration."""
+        ...
+
+    @property
+    def providers(self) -> List[str]:
+        """Return execution providers list for this backend."""
+        return []
+
+    @property
+    def cached_resolutions(self) -> List[int]:
+        """Return tile resolutions currently cached in memory."""
+        return list(self._sessions.keys())
+
+    @abc.abstractmethod
+    def get_session(self, size: int) -> Any:
+        """Retrieve or instantiate an inference session for the given resolution."""
+        ...
+
+    @abc.abstractmethod
+    def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
+        """Execute forward pass on normalized NCHW float32 input."""
+        ...
+
+
+class TensorRTBackend(InferenceBackend):
+    """Inference strategy utilizing NVIDIA TensorRT C++ SDK execution plans (.engine)."""
+
+    @property
+    def name(self) -> BackendType:
+        return BackendType.TENSORRT
+
+    @property
+    def execution_provider(self) -> str:
+        return "TensorRT"
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        return True
+
+    def get_session(self, size: int) -> Any:
+        """Load and cache a TensorRT engine execution context."""
+        if size in self._sessions:
+            return self._sessions[size]
+
+        engine_path = self.models_dir / f"yolo_{size}.engine"
+        if not engine_path.exists() or engine_path.stat().st_size < MIN_ENGINE_SIZE_BYTES:
+            raise FileNotFoundError(
+                f"TensorRT engine {engine_path} not found or invalid size (< 1MB)."
+            )
+
+        import tensorrt as trt
+
+        runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
+        with open(engine_path, "rb") as f:
+            engine = runtime.deserialize_cuda_engine(f.read())
+        if engine is None:
+            raise RuntimeError(f"Failed to deserialize TensorRT engine: {engine_path}")
+        context = engine.create_execution_context()
+        session = {"engine": engine, "context": context, "size": size}
+        self._sessions[size] = session
+        logger.info("TensorRTBackend: Cached session for resolution %d.", size)
+        return session
+
+    def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
+        """Execute TensorRT forward pass directly in VRAM without host copies."""
+        import torch
+
+        engine = session["engine"]
+        context = session["context"]
+
+        input_name = engine.get_tensor_name(0)
+        output_name = engine.get_tensor_name(1)
+
+        d_input = torch.from_numpy(input_array).cuda()
+        out_shape = engine.get_tensor_shape(output_name)
+        d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
+
+        context.set_tensor_address(input_name, d_input.data_ptr())
+        context.set_tensor_address(output_name, d_output.data_ptr())
+        context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
+
+        return d_output.cpu().numpy()
+
+
+class ONNXRuntimeBackendBase(InferenceBackend):
+    """Base inference strategy for ONNX Runtime execution providers."""
+
+    def __init__(
+        self,
+        models_dir: Path,
+        providers: Optional[List[str]] = None,
+    ) -> None:
+        super().__init__(models_dir)
+        self._providers: List[str] = list(providers) if providers else ["CPUExecutionProvider"]
+
+    @property
+    def name(self) -> BackendType:
+        return BackendType.ONNXRUNTIME
+
+    @property
+    def providers(self) -> List[str]:
+        return self._providers
+
+    def get_session(self, size: int) -> Any:
+        """Create and cache an ONNX Runtime InferenceSession."""
+        if size in self._sessions:
+            return self._sessions[size]
+
+        import onnxruntime as ort
+
+        model_path = self.models_dir / f"yolo_{size}.onnx"
+        if not model_path.exists():
+            logger.info(
+                "ONNX model %s not found on disk. Attempting automatic download from configured model_urls...",
+                model_path.name,
+            )
+            try:
+                from scripts.download_weights import ensure_single_model
+
+                ensure_single_model(model_path.name, self.models_dir)
+            except Exception as exc:
+                logger.warning("Failed to automatically acquire model %s: %s", model_path.name, exc)
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"ONNX model file not found: {model_path}")
+
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.intra_op_num_threads = min(4, os.cpu_count() or 1)
+
+        try:
+            session = ort.InferenceSession(
+                str(model_path), sess_options, providers=self._providers
+            )
+        except Exception as err:
+            logger.warning(
+                "UnifiedDetector: Provider %s failed (%s). Falling back to CPUExecutionProvider.",
+                self._providers,
+                err,
+            )
+            self._providers = ["CPUExecutionProvider"]
+            session = ort.InferenceSession(
+                str(model_path), sess_options, providers=self._providers
+            )
+
+        self._sessions[size] = session
+        logger.info(
+            "ONNXRuntime (%s): Cached session for tile size %d.",
+            self.execution_provider,
+            size,
+        )
+        return session
+
+    def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
+        """Run forward pass via ONNX Runtime."""
+        input_name = session.get_inputs()[0].name
+        outputs = session.run(None, {input_name: input_array})
+        return outputs[0]
+
+
+class DirectMLBackend(ONNXRuntimeBackendBase):
+    """DirectML (DmlExecutionProvider) backend strategy for universal Windows GPU acceleration."""
+
+    def __init__(
+        self,
+        models_dir: Path,
+        custom_providers: Optional[List[str]] = None,
+    ) -> None:
+        provs = custom_providers or ["DmlExecutionProvider", "CPUExecutionProvider"]
+        super().__init__(models_dir, providers=provs)
+
+    @property
+    def execution_provider(self) -> str:
+        return "DmlExecutionProvider"
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        return True
+
+
+class CUDAExecutionProviderBackend(ONNXRuntimeBackendBase):
+    """NVIDIA CUDA (CUDAExecutionProvider) backend strategy for ONNX Runtime."""
+
+    def __init__(
+        self,
+        models_dir: Path,
+        custom_providers: Optional[List[str]] = None,
+    ) -> None:
+        provs = custom_providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        super().__init__(models_dir, providers=provs)
+
+    @property
+    def execution_provider(self) -> str:
+        return "CUDAExecutionProvider"
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        return True
+
+
+class CPUExecutionProviderBackend(ONNXRuntimeBackendBase):
+    """CPU execution provider strategy for deterministic portable inference."""
+
+    def __init__(
+        self,
+        models_dir: Path,
+        custom_providers: Optional[List[str]] = None,
+    ) -> None:
+        provs = custom_providers or ["CPUExecutionProvider"]
+        super().__init__(models_dir, providers=provs)
+
+    @property
+    def execution_provider(self) -> str:
+        return "CPUExecutionProvider"
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        return False
+
+
+# =============================================================================
+# Backend Factory
+# =============================================================================
+class BackendFactory:
+    """Factory for polymorphic selection and instantiation of inference backends."""
+
+    @staticmethod
+    def create(
+        models_dir: Path,
+        prefer_tensorrt: bool = True,
+        force_provider: Optional[str] = None,
+        is_windows: Optional[bool] = None,
+        available_providers: Optional[List[str]] = None,
+    ) -> InferenceBackend:
+        """Instantiate the optimal InferenceBackend based on available hardware and OS."""
+        if prefer_tensorrt and not force_provider and check_tensorrt_available(models_dir):
+            logger.info("BackendFactory: Selected TensorRTBackend.")
+            return TensorRTBackend(models_dir)
+
+        if force_provider:
+            raw_providers = [force_provider, "CPUExecutionProvider"]
+            clean_providers = list(dict.fromkeys(raw_providers))
+            if "Dml" in force_provider:
+                logger.info("BackendFactory: Forced DirectMLBackend (%s).", force_provider)
+                return DirectMLBackend(models_dir, custom_providers=clean_providers)
+            if "CUDA" in force_provider:
+                logger.info("BackendFactory: Forced CUDAExecutionProviderBackend (%s).", force_provider)
+                return CUDAExecutionProviderBackend(models_dir, custom_providers=clean_providers)
+            logger.info("BackendFactory: Forced CPUExecutionProviderBackend (%s).", force_provider)
+            return CPUExecutionProviderBackend(models_dir, custom_providers=clean_providers)
+
+        provs, active_provider = get_onnx_execution_providers(
+            available_providers=available_providers,
+            is_windows=is_windows,
+        )
+        if active_provider == "DmlExecutionProvider":
+            logger.info("BackendFactory: Selected DirectMLBackend.")
+            return DirectMLBackend(models_dir, custom_providers=provs)
+        if active_provider == "CUDAExecutionProvider":
+            logger.info("BackendFactory: Selected CUDAExecutionProviderBackend.")
+            return CUDAExecutionProviderBackend(models_dir, custom_providers=provs)
+        logger.info("BackendFactory: Selected CPUExecutionProviderBackend.")
+        return CPUExecutionProviderBackend(models_dir, custom_providers=provs)
+
+
+# =============================================================================
 # Unified Detector
 # =============================================================================
 class UnifiedDetector:
     """Unified cross-platform detection engine with transparent hardware dispatch.
 
     Dispatches tile inference to either C++ TensorRT or ONNX Runtime (DirectML / CUDA / CPU)
-    while exposing an identical, fail-safe predict_tile() API and caching model sessions.
+    via polymorphic InferenceBackend strategies while exposing an identical, fail-safe API.
     """
 
     def __init__(
@@ -322,7 +613,7 @@ class UnifiedDetector:
         is_windows: Optional[bool] = None,
         available_providers: Optional[List[str]] = None,
     ) -> None:
-        """Initialize the unified detector and probe hardware environment.
+        """Initialize the unified detector and instantiate the optimal backend strategy.
 
         Args:
             models_dir: Directory containing .onnx and .engine models.
@@ -337,71 +628,54 @@ class UnifiedDetector:
         else:
             self.models_dir = Path(models_dir)
 
-        # Model session cache: {tile_size: session_or_engine}
-        self._sessions: Dict[int, Any] = {}
-
-        # 1. Probe hardware and determine backend
         self._force_provider = force_provider
         self._prefer_tensorrt = prefer_tensorrt
         self._is_windows_override = is_windows
         self._available_providers_override = available_providers
 
-        self._discover_backend()
+        # Strategy instance
+        self._backend_strategy: InferenceBackend = BackendFactory.create(
+            models_dir=self.models_dir,
+            prefer_tensorrt=prefer_tensorrt,
+            force_provider=force_provider,
+            is_windows=is_windows,
+            available_providers=available_providers,
+        )
 
-    def _discover_backend(self) -> None:
-        """Evaluate hardware and configure inference backend and execution provider."""
-        trt_available = False
-        if self._prefer_tensorrt and not self._force_provider:
-            trt_available = check_tensorrt_available(self.models_dir)
-
-        if trt_available:
-            self._backend = BackendType.TENSORRT
-            self._execution_provider = "TensorRT"
-            self._is_gpu_accelerated = True
-            logger.info("UnifiedDetector: Initialized with C++ TensorRT Backend.")
-        else:
-            self._backend = BackendType.ONNXRUNTIME
-            if self._force_provider:
-                raw_providers = [self._force_provider, "CPUExecutionProvider"]
-                self._providers = list(dict.fromkeys(raw_providers))
-                self._execution_provider = self._force_provider
-                self._is_gpu_accelerated = (
-                    "Dml" in self._force_provider or "CUDA" in self._force_provider
-                )
-                logger.info("UnifiedDetector: Forced provider: %s", self._force_provider)
-            else:
-                provs, self._execution_provider = get_onnx_execution_providers(
-                    available_providers=self._available_providers_override,
-                    is_windows=self._is_windows_override,
-                )
-                self._providers = list(dict.fromkeys(provs))
-                self._is_gpu_accelerated = (
-                    "Dml" in self._execution_provider or "CUDA" in self._execution_provider
-                )
-            logger.info(
-                "UnifiedDetector: Initialized with ONNX Runtime Backend (Provider: %s).",
-                self._execution_provider,
-            )
+    @property
+    def backend_strategy(self) -> InferenceBackend:
+        """Return the active backend strategy instance."""
+        return self._backend_strategy
 
     @property
     def backend(self) -> BackendType:
-        """Return active backend (TensorRT or ONNXRuntime)."""
-        return self._backend
+        """Return active backend enum (TensorRT or ONNXRuntime)."""
+        return self._backend_strategy.name
 
     @property
     def execution_provider(self) -> str:
         """Return active execution provider name (e.g. DmlExecutionProvider, CPUExecutionProvider)."""
-        return self._execution_provider
+        return self._backend_strategy.execution_provider
 
     @property
     def is_gpu_accelerated(self) -> bool:
         """Check if hardware GPU acceleration is active."""
-        return self._is_gpu_accelerated
+        return self._backend_strategy.is_gpu_accelerated
 
     @property
     def cached_resolutions(self) -> List[int]:
         """Return list of currently cached model tile sizes."""
-        return list(self._sessions.keys())
+        return self._backend_strategy.cached_resolutions
+
+    @property
+    def _providers(self) -> List[str]:
+        """Return execution provider list of the active backend."""
+        return self._backend_strategy.providers
+
+    @property
+    def _sessions(self) -> Dict[int, Any]:
+        """Return model session cache dictionary."""
+        return self._backend_strategy._sessions
 
     # --------------------------------------------------------------------------
     # Model Pool Management & Session Caching
@@ -421,99 +695,24 @@ class UnifiedDetector:
         """
         snapped_size = self._snap_resolution(tile_size)
 
-        if snapped_size in self._sessions:
-            return self._sessions[snapped_size]
-
-        # Load session for the snapped resolution
-        if self._backend == BackendType.ONNXRUNTIME:
-            session = self._create_onnx_session(snapped_size)
-        else:
-            session = self._create_tensorrt_session(snapped_size)
-
-        self._sessions[snapped_size] = session
-        logger.info(
-            "UnifiedDetector: Cached new %s session for tile size %d.",
-            self._backend.value,
-            snapped_size,
-        )
-        return session
-
-    def _create_onnx_session(self, size: int) -> Any:
-        """Create and configure an ONNX Runtime InferenceSession."""
-        import onnxruntime as ort
-
-        model_path = self.models_dir / f"yolo_{size}.onnx"
-        if not model_path.exists():
-            logger.info(
-                "ONNX model %s not found on disk. Attempting automatic download from configured model_urls...",
-                model_path.name,
-            )
-            try:
-                from scripts.download_weights import ensure_single_model
-                ensure_single_model(model_path.name, self.models_dir)
-            except Exception as exc:
-                logger.warning("Failed to automatically acquire model %s: %s", model_path.name, exc)
-
-        if not model_path.exists():
-            raise FileNotFoundError(f"ONNX model file not found: {model_path}")
-
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.intra_op_num_threads = min(4, os.cpu_count() or 1)
-
         try:
-            session = ort.InferenceSession(
-                str(model_path), sess_options, providers=self._providers
-            )
-        except Exception as err:
-            # Safe fallback: if provider failed (e.g. Dml failure on unsupported device), fallback to CPU
-            logger.warning(
-                "UnifiedDetector: Provider %s failed (%s). Falling back to CPUExecutionProvider.",
-                self._providers,
-                err,
-            )
-            self._providers = ["CPUExecutionProvider"]
-            self._execution_provider = "CPUExecutionProvider"
-            self._is_gpu_accelerated = False
-            session = ort.InferenceSession(
-                str(model_path), sess_options, providers=self._providers
-            )
-
-        return session
-
-    def _create_tensorrt_session(self, size: int) -> Any:
-        """Create a TensorRT engine session or fall back to ONNX if engine is missing or invalid."""
-        engine_path = self.models_dir / f"yolo_{size}.engine"
-        if not engine_path.exists() or engine_path.stat().st_size < MIN_ENGINE_SIZE_BYTES:
-            logger.warning(
-                "UnifiedDetector: TensorRT engine %s not found or invalid size (< 1MB). Falling back to ONNX Runtime.",
-                engine_path,
-            )
-            self._backend = BackendType.ONNXRUNTIME
-            self._providers, self._execution_provider = get_onnx_execution_providers()
-            return self._create_onnx_session(size)
-
-        # Attempt to load TensorRT engine
-        try:
-            # Check if C++ wrapper or tensorrt is available
-            import tensorrt as trt
-
-            runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
-            with open(engine_path, "rb") as f:
-                engine = runtime.deserialize_cuda_engine(f.read())
-            if engine is None:
-                raise RuntimeError("Failed to deserialize TensorRT engine.")
-            context = engine.create_execution_context()
-            return {"engine": engine, "context": context, "size": size}
+            return self._backend_strategy.get_session(snapped_size)
         except Exception as exc:
-            logger.warning(
-                "UnifiedDetector: Failed to load TensorRT engine (%s). "
-                "Transparently falling back to ONNX Runtime.",
-                exc,
-            )
-            self._backend = BackendType.ONNXRUNTIME
-            self._providers, self._execution_provider = get_onnx_execution_providers()
-            return self._create_onnx_session(size)
+            if isinstance(self._backend_strategy, TensorRTBackend):
+                logger.warning(
+                    "UnifiedDetector: TensorRT engine session failed (%s). "
+                    "Transparently falling back to ONNX Runtime.",
+                    exc,
+                )
+                self._backend_strategy = BackendFactory.create(
+                    models_dir=self.models_dir,
+                    prefer_tensorrt=False,
+                    force_provider=self._force_provider,
+                    is_windows=self._is_windows_override,
+                    available_providers=self._available_providers_override,
+                )
+                return self._backend_strategy.get_session(snapped_size)
+            raise
 
     def preload_all_models(self) -> None:
         """Pre-warm and cache inference sessions for all supported resolutions."""
@@ -547,7 +746,7 @@ class UnifiedDetector:
         # 1. Preprocess input to normalized float32 NCHW (1, 3, H, W)
         input_array, in_h, in_w = self._preprocess_input(tile_tensor_or_numpy)
 
-        target_size = self._snap_resolution(tile_size or in_h)
+        target_size = self._snap_resolution(640 if tile_size == 736 else (tile_size or in_h))
 
         # Resize if dimensions differ from model input
         if (in_h != target_size) or (in_w != target_size):
@@ -563,10 +762,16 @@ class UnifiedDetector:
         raw_output = self._run_inference(session, input_array, target_size)
 
         # 3. Decode output and apply NMS
+        # For 736px slices, detections stay in 640px model space for host-device offset mapping
+        decode_orig_size = (
+            (target_size, target_size)
+            if (tile_size == 736 or (in_h == 736 and in_w == 736))
+            else (in_w, in_h)
+        )
         detections = self._decode_yolo_output(
             raw_output=raw_output,
             model_size=target_size,
-            original_size=(in_w, in_h),
+            original_size=decode_orig_size,
             conf_threshold=conf_threshold,
             iou_threshold=iou_threshold,
         )
@@ -614,30 +819,8 @@ class UnifiedDetector:
         return data, h, w
 
     def _run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
-        """Run forward pass through ONNX Runtime or TensorRT."""
-        if self._backend == BackendType.ONNXRUNTIME:
-            input_name = session.get_inputs()[0].name
-            outputs = session.run(None, {input_name: input_array})
-            return outputs[0]
-
-        # TensorRT execution
-        import torch
-
-        engine = session["engine"]
-        context = session["context"]
-
-        input_name = engine.get_tensor_name(0)
-        output_name = engine.get_tensor_name(1)
-
-        d_input = torch.from_numpy(input_array).cuda()
-        out_shape = engine.get_tensor_shape(output_name)
-        d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
-
-        context.set_tensor_address(input_name, d_input.data_ptr())
-        context.set_tensor_address(output_name, d_output.data_ptr())
-        context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
-
-        return d_output.cpu().numpy()
+        """Run forward pass through active backend strategy (TensorRT or ONNX Runtime)."""
+        return self._backend_strategy.run_inference(session, input_array, size)
 
     def _decode_yolo_output(
         self,

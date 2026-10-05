@@ -214,6 +214,60 @@ void test_json_formatting()
     CHECK(pretty.find("\n") != std::string::npos, "Pretty JSON has newlines");
 }
 
+// ---------------------------------------------------------------------------
+// 6. Test: 736px slice scaled into 640px model space (scale = 736/640 = 1.15)
+// ---------------------------------------------------------------------------
+void test_736_remap_scaling()
+{
+    std::printf("--- Running test_736_remap_scaling ---\n");
+
+    TileRect tile736{1000, 2000, 736, 736};
+    Detection local_det{
+        .x_local = 320.0f,
+        .y_local = 320.0f,
+        .w = 64.0f,
+        .h = 48.0f,
+        .conf = 0.90f,
+        .class_id = 1};
+
+    GlobalDetection g = remap_offsets(local_det, tile736, /*model_target_size=*/640);
+
+    // scale_x = 736.0 / 640.0 = 1.15, scale_y = 736.0 / 640.0 = 1.15
+    // x = 1000 + 320 * 1.15 = 1000 + 368 = 1368
+    // y = 2000 + 320 * 1.15 = 2000 + 368 = 2368
+    // w = 64 * 1.15 = 73.6
+    // h = 48 * 1.15 = 55.2
+    CHECK_NEAR(g.x, 1368.0f, 0.01f, "736px tile scaled X coordinate");
+    CHECK_NEAR(g.y, 2368.0f, 0.01f, "736px tile scaled Y coordinate");
+    CHECK_NEAR(g.w, 73.6f, 0.01f, "736px tile scaled width");
+    CHECK_NEAR(g.h, 55.2f, 0.01f, "736px tile scaled height");
+}
+
+// ---------------------------------------------------------------------------
+// 7. Test: 640px canonical tile (scale = 640/640 = 1.0 strictly)
+// ---------------------------------------------------------------------------
+void test_640_canonical_scaling()
+{
+    std::printf("--- Running test_640_canonical_scaling ---\n");
+
+    TileRect tile640{1000, 2000, 640, 640};
+    Detection local_det{
+        .x_local = 320.0f,
+        .y_local = 320.0f,
+        .w = 64.0f,
+        .h = 48.0f,
+        .conf = 0.90f,
+        .class_id = 1};
+
+    GlobalDetection g = remap_offsets(local_det, tile640, /*model_target_size=*/640);
+
+    // scale = 1.0 strictly
+    CHECK_NEAR(g.x, 1320.0f, 0.0001f, "640px tile strictly 1.0 scaled X coordinate");
+    CHECK_NEAR(g.y, 2320.0f, 0.0001f, "640px tile strictly 1.0 scaled Y coordinate");
+    CHECK_NEAR(g.w, 64.0f, 0.0001f, "640px tile strictly 1.0 scaled width");
+    CHECK_NEAR(g.h, 48.0f, 0.0001f, "640px tile strictly 1.0 scaled height");
+}
+
 int main()
 {
     test_seam_detection_merging();
@@ -221,6 +275,8 @@ int main()
     test_different_classes_no_merge();
     test_remap_scaling();
     test_json_formatting();
+    test_736_remap_scaling();
+    test_640_canonical_scaling();
 
     if (g_failures == 0)
     {

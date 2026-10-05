@@ -98,9 +98,9 @@ def validate_tiling_core_dry() -> bool:
 
     cfg = pytiling_core.calculate_tiling_params(width, height, altitude, vram_mb)
 
-    # Validate tile size selection from discrete grid [320, 416, 512, 640]
-    if cfg.tile_size not in [320, 416, 512, 640]:
-        log_fail(f"Selected tile_size {cfg.tile_size} is not in [320, 416, 512, 640]")
+    # Validate tile size selection from discrete grid [320, 416, 512, 640, 736]
+    if cfg.tile_size not in [320, 416, 512, 640, 736]:
+        log_fail(f"Selected tile_size {cfg.tile_size} is not in [320, 416, 512, 640, 736]")
         return False
     log_pass(f"Discrete tile size correctly chosen: {cfg.tile_size}px (T_calc formula applied)")
 

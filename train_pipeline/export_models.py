@@ -39,7 +39,7 @@ GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 # =============================================================================
 # INT8 Entropy Calibrator for TensorRT PTQ
 # =============================================================================
-if HAS_TENSORRT:
+if HAS_TENSORRT and hasattr(trt, "IInt8EntropyCalibrator2"):
     class YOLOInt8Calibrator(trt.IInt8EntropyCalibrator2):
         """
         Entropy Calibrator for TensorRT Post-Training INT8 Quantization.
@@ -189,9 +189,12 @@ def build_trt_engine(
         trt.MemoryPoolType.WORKSPACE, workspace_mb * 1024 * 1024
     )
 
-    # Explicit batch network definition (required for ONNX)
-    flag = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-    network = builder.create_network(flag)
+    # Explicit batch network definition (required for ONNX in TRT < 10, default in TRT >= 10)
+    if hasattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH"):
+        flag = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        network = builder.create_network(flag)
+    else:
+        network = builder.create_network()
     parser = trt.OnnxParser(network, trt_logger)
 
     with open(onnx_path, "rb") as f:
@@ -202,18 +205,18 @@ def build_trt_engine(
             return False
 
     # Precision modes
-    if fp16:
-        if builder.platform_has_fast_fp16:
+    if fp16 and hasattr(trt.BuilderFlag, "FP16"):
+        if getattr(builder, "platform_has_fast_fp16", True):
             config.set_flag(trt.BuilderFlag.FP16)
             logger.info("FP16 half-precision enabled.")
         else:
             logger.warning("FP16 precision not supported by current GPU architecture.")
 
-    if int8:
-        if builder.platform_has_fast_int8:
+    if int8 and hasattr(trt.BuilderFlag, "INT8"):
+        if getattr(builder, "platform_has_fast_int8", True):
             config.set_flag(trt.BuilderFlag.INT8)
             logger.info("INT8 quantization enabled.")
-            if calib_dir and Path(calib_dir).exists():
+            if calib_dir and Path(calib_dir).exists() and hasattr(trt, "IInt8EntropyCalibrator2"):
                 cache_path = str(engine_path.parent / f"yolo_{img_size}_int8.cache")
                 calibrator = YOLOInt8Calibrator(
                     calib_dir=calib_dir,
