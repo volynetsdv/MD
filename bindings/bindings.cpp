@@ -306,5 +306,15 @@ Returns
 -------
 str
 )doc");
+
+    // ========================================================================
+    // calculate_containment (IoS)
+    // ========================================================================
+    m.def("calculate_containment",
+        [](const GlobalDetection& a, const GlobalDetection& b) {
+            return calculate_containment(a, b);
+        },
+        py::arg("a"), py::arg("b"),
+        "Calculate Intersection over Smaller (IoS / Containment) between two detections.");
 }
 

@@ -53,5 +53,23 @@ if __name__ == "__main__":
     assert p0945_cfg.grid_cols <= 3 and p0945_cfg.grid_rows <= 3
     assert p0945_cfg.tile_size == 640
 
+    # Acceptance Criteria: Containment / IoS Suppression (Intersection over Smaller >= 0.88)
+    b1 = pytiling_core.GlobalDetection()
+    b1.x, b1.y, b1.w, b1.h, b1.conf, b1.class_id, b1.tile_id = 100.0, 100.0, 150.0, 150.0, 0.85, 0, 0
+    b2 = pytiling_core.GlobalDetection()
+    b2.x, b2.y, b2.w, b2.h, b2.conf, b2.class_id, b2.tile_id = 110.0, 110.0, 50.0, 50.0, 0.92, 0, 1
+
+    ios_val = pytiling_core.calculate_containment(b1, b2)
+    assert ios_val >= 0.88
+
+    res_nms = pytiling_core.cluster_diou_nms([b1, b2], [], 0.5, 0.0)
+    assert len(res_nms) == 1
+    assert abs(res_nms[0].x - 100.0) <= 0.01
+    assert abs(res_nms[0].y - 100.0) <= 0.01
+    assert abs(res_nms[0].w - 150.0) <= 0.01
+    assert abs(res_nms[0].h - 150.0) <= 0.01
+    assert abs(res_nms[0].conf - 0.92) <= 0.001
+
     print("test_binding.py passed successfully!")
+
 

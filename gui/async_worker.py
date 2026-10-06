@@ -161,6 +161,25 @@ def py_calculate_diou(a: GlobalDet, b: GlobalDet) -> float:
     return iou - (d2 / c2)
 
 
+def py_calculate_containment(a: GlobalDet, b: GlobalDet) -> float:
+    """Calculate containment ratio (Intersection over Smaller / IoS) between two detections."""
+    x1 = max(a.x, b.x)
+    y1 = max(a.y, b.y)
+    x2 = min(a.x + a.w, b.x + b.w)
+    y2 = min(a.y + a.h, b.y + b.h)
+
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter_area = inter_w * inter_h
+
+    area_a = a.w * a.h
+    area_b = b.w * b.h
+    min_area = min(area_a, area_b)
+    if min_area <= 1e-7:
+        return 0.0
+    return inter_area / min_area
+
+
 def py_cluster_diou_nms(
     detections: List[GlobalDet],
     tiles: List[Any],
@@ -185,6 +204,45 @@ def py_cluster_diou_nms(
 
     for cls in classes:
         cls_boxes = [d for d in candidates if d.class_id == cls]
+
+        # --- Containment / IoS Suppression (Intersection over Smaller >= 0.88) ---
+        num_cls = len(cls_boxes)
+        if num_cls > 1:
+            ios_suppressed = [False] * num_cls
+            for i in range(num_cls):
+                if ios_suppressed[i]:
+                    continue
+                area_i = cls_boxes[i].w * cls_boxes[i].h
+                if area_i <= 1e-7:
+                    ios_suppressed[i] = True
+                    continue
+
+                for j in range(i + 1, num_cls):
+                    if ios_suppressed[j]:
+                        continue
+                    area_j = cls_boxes[j].w * cls_boxes[j].h
+                    if area_j <= 1e-7:
+                        ios_suppressed[j] = True
+                        continue
+
+                    containment = py_calculate_containment(cls_boxes[i], cls_boxes[j])
+                    min_area = min(area_i, area_j)
+                    max_area = max(area_i, area_j)
+
+                    # A box is considered a nested edge fragment if it is contained within the larger box
+                    # (containment >= 0.88) and has a substantially smaller area (min_area <= 0.80 * max_area).
+                    # Comparable full detections across tile seams are preserved for DIoU weighted coordinate averaging.
+                    if containment >= 0.88 and min_area <= 0.80 * max_area:
+                        if area_i < area_j:
+                            cls_boxes[j].conf = max(cls_boxes[j].conf, cls_boxes[i].conf)
+                            ios_suppressed[i] = True
+                            break
+                        else:
+                            cls_boxes[i].conf = max(cls_boxes[i].conf, cls_boxes[j].conf)
+                            ios_suppressed[j] = True
+
+            cls_boxes = [cls_boxes[k] for k in range(num_cls) if not ios_suppressed[k]]
+
         cls_boxes.sort(key=lambda x: x.conf, reverse=True)
 
         n = len(cls_boxes)
