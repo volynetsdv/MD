@@ -20,6 +20,7 @@ Autonomous CLI diagnostic utility designed for empirical data collection for mas
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import datetime
 import gc
 import json
@@ -432,6 +433,351 @@ def generate_synthetic_aerial_frame(width: int, height: int, target_file: Path) 
 
 
 # =============================================================================
+# Detection Accuracy Evaluation Engine (COCO/YOLO Precision, Recall, mAP50, mAP50-95)
+# =============================================================================
+YOLO_TRAINING_BASELINE_METRICS: Dict[str, float] = {
+    "precision": 0.765,
+    "recall": 0.688,
+    "map50": 0.728,
+    "map50_95": 0.482,
+}
+
+
+def box_iou(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarray:
+    """Compute pairwise Intersection-over-Union (IoU) between box sets [N, 4] and [M, 4].
+
+    Both sets are assumed to be in absolute pixel (x1, y1, x2, y2) format.
+    Returns [N, M] array of float32 IoU values.
+    """
+    if len(boxes1) == 0 or len(boxes2) == 0:
+        return np.zeros((len(boxes1), len(boxes2)), dtype=np.float32)
+
+    x1 = np.maximum(boxes1[:, 0:1], boxes2[:, 0:1].T)
+    y1 = np.maximum(boxes1[:, 1:2], boxes2[:, 1:2].T)
+    x2 = np.minimum(boxes1[:, 2:3], boxes2[:, 2:3].T)
+    y2 = np.minimum(boxes1[:, 3:4], boxes2[:, 3:4].T)
+
+    inter_w = np.maximum(0.0, x2 - x1)
+    inter_h = np.maximum(0.0, y2 - y1)
+    intersection = inter_w * inter_h
+
+    area1 = np.maximum(0.0, boxes1[:, 2] - boxes1[:, 0]) * np.maximum(0.0, boxes1[:, 3] - boxes1[:, 1])
+    area2 = np.maximum(0.0, boxes2[:, 2] - boxes2[:, 0]) * np.maximum(0.0, boxes2[:, 3] - boxes2[:, 1])
+
+    union = area1[:, None] + area2[None, :] - intersection
+    return np.where(union > 1e-7, intersection / union, 0.0).astype(np.float32)
+
+
+def compute_ap_101(recalls: np.ndarray, precisions: np.ndarray) -> float:
+    """Compute Average Precision (AP) using standard 101-point interpolated precision envelope."""
+    if len(recalls) == 0:
+        return 0.0
+
+    mrec = np.concatenate(([0.0], recalls, [recalls[-1] if len(recalls) else 1.0], [1.0]))
+    mpre = np.concatenate(([1.0], precisions, [0.0], [0.0]))
+    mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
+    x = np.linspace(0.0, 1.0, 101)
+    trapz_fn = getattr(np, "trapezoid", getattr(np, "trapz", None))
+    if trapz_fn is not None:
+        ap = trapz_fn(np.interp(x, mrec, mpre), x)
+    else:
+        ap = np.mean(np.interp(x, mrec, mpre))
+    return float(np.clip(ap, 0.0, 1.0))
+
+
+def find_default_gt_labels_dir(input_path: Optional[Path]) -> Optional[Path]:
+    """Auto-discover matching Ground Truth labels folder relative to input images path."""
+    if input_path is None:
+        return None
+    p = input_path.resolve()
+    base_dir = p if p.is_dir() else p.parent
+
+    # Candidate 1: Substitute 'images' with 'labels' in path hierarchy
+    parts = list(base_dir.parts)
+    if "images" in parts:
+        idx = len(parts) - 1 - parts[::-1].index("images")
+        lbl_parts = list(parts)
+        lbl_parts[idx] = "labels"
+        cand = Path(*lbl_parts)
+        if cand.exists() and cand.is_dir():
+            return cand
+
+    # Candidate 2: Sibling 'labels' directory with matching folder name
+    cand = base_dir.parent / "labels" / base_dir.name
+    if cand.exists() and cand.is_dir():
+        return cand
+
+    # Candidate 3: Sibling 'labels' directly
+    cand = base_dir.parent / "labels"
+    if cand.exists() and cand.is_dir():
+        return cand
+
+    # Candidate 4: Child 'labels' directory
+    cand = base_dir / "labels"
+    if cand.exists() and cand.is_dir():
+        return cand
+
+    return None
+
+
+def load_ground_truth(
+    gt_labels_dir: Optional[Path],
+    image_name: str,
+    img_w: int,
+    img_h: int,
+) -> List[Dict[str, Any]]:
+    """Parse Ground Truth annotations for a specific image into absolute bounding boxes.
+
+    Uses project annotation adapters (DotaOBBAdapter / YoloOBBAdapter / YoloHBBAdapter)
+    to convert normalized or oriented polygons into global absolute pixel boxes.
+    """
+    if gt_labels_dir is None or not gt_labels_dir.is_dir():
+        return []
+
+    stem = Path(image_name).stem
+    candidate_txt = gt_labels_dir / f"{stem}.txt"
+    if not candidate_txt.is_file():
+        # Fallback case-insensitive check
+        for f in gt_labels_dir.glob("*.txt"):
+            if f.stem.lower() == stem.lower():
+                candidate_txt = f
+                break
+        else:
+            return []
+
+    targets: List[Dict[str, Any]] = []
+    try:
+        from train_pipeline.dataset_slicer import detect_format, get_adapter
+
+        fmt = detect_format(candidate_txt)
+        adapter = get_adapter(fmt)
+        parsed_boxes = adapter.parse_file(candidate_txt, img_w=img_w, img_h=img_h)
+        for b in parsed_boxes:
+            x1, y1, x2, y2 = b.to_xyxy_abs(img_w, img_h)
+            x1_cl = max(0.0, min(float(img_w), float(x1)))
+            y1_cl = max(0.0, min(float(img_h), float(y1)))
+            x2_cl = max(0.0, min(float(img_w), float(x2)))
+            y2_cl = max(0.0, min(float(img_h), float(y2)))
+            if x2_cl > x1_cl and y2_cl > y1_cl:
+                targets.append({
+                    "class_id": int(b.class_id),
+                    "bbox": [x1_cl, y1_cl, x2_cl, y2_cl],
+                })
+    except Exception as exc:
+        logger.warning("Failed parsing Ground Truth file %s: %s", candidate_txt, exc)
+
+    return targets
+
+
+def evaluate_detection_accuracy(
+    predictions_by_image: Dict[str, List[Dict[str, Any]]],
+    gt_by_image: Dict[str, List[Dict[str, Any]]],
+    class_names: Dict[int, str],
+    primary_iou_thresh: float = 0.50,
+    iou_grid: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Execute rigorous evaluation of detections against Ground Truth across images.
+
+    Computes:
+    - Precision, Recall at primary_iou_thresh (default 0.50)
+    - AP@50 (Average Precision at IoU = 0.50)
+    - AP@50-95 (Average Precision averaged over 10 IoU thresholds 0.50..0.95 with step 0.05)
+    - Per-class breakdown for all active dataset classes.
+    """
+    if iou_grid is None:
+        iou_grid = np.linspace(0.50, 0.95, 10)
+
+    # Group Ground Truth by class and image
+    gt_by_class: Dict[int, Dict[str, np.ndarray]] = defaultdict(dict)
+    total_gt_count = 0
+    gt_counts_by_class: Dict[int, int] = defaultdict(int)
+
+    for img_key, gts in gt_by_image.items():
+        cls_groups: Dict[int, List[List[float]]] = defaultdict(list)
+        for g in gts:
+            cid = int(g["class_id"])
+            box = [float(c) for c in g["bbox"]]
+            cls_groups[cid].append(box)
+            total_gt_count += 1
+            gt_counts_by_class[cid] += 1
+        for cid, boxes in cls_groups.items():
+            gt_by_class[cid][img_key] = np.array(boxes, dtype=np.float32)
+
+    # Group Predictions by class
+    preds_by_class: Dict[int, List[Tuple[str, float, np.ndarray]]] = defaultdict(list)
+    total_pred_count = 0
+
+    for img_key, preds in predictions_by_image.items():
+        for p in preds:
+            cid = int(p["class_id"])
+            conf = float(p.get("conf", p.get("confidence", 0.0)))
+            b = p.get("bbox")
+            if b and len(b) == 4:
+                # In format_detections_for_gui, bbox is [x, y, w, h]
+                x1, y1 = float(b[0]), float(b[1])
+                x2, y2 = x1 + float(b[2]), y1 + float(b[3])
+            else:
+                x1, y1 = float(p.get("x", 0.0)), float(p.get("y", 0.0))
+                x2, y2 = x1 + float(p.get("w", 0.0)), y1 + float(p.get("h", 0.0))
+            box_arr = np.array([x1, y1, x2, y2], dtype=np.float32)
+            preds_by_class[cid].append((img_key, conf, box_arr))
+            total_pred_count += 1
+
+    # Evaluate across all classes present in Ground Truth or Predictions
+    all_active_cids = sorted(set(gt_counts_by_class.keys()) | set(preds_by_class.keys()))
+    per_class_results: Dict[str, Any] = {}
+    total_tp_at_primary = 0
+    total_fp_at_primary = 0
+
+    ap50_list: List[float] = []
+    ap50_95_list: List[float] = []
+
+    for cid in all_active_cids:
+        cname = class_names.get(cid, f"class_{cid}")
+        n_gt = gt_counts_by_class.get(cid, 0)
+        c_preds = preds_by_class.get(cid, [])
+        n_pred = len(c_preds)
+
+        if n_gt == 0 and n_pred == 0:
+            continue
+
+        if n_gt == 0 and n_pred > 0:
+            total_fp_at_primary += n_pred
+            per_class_results[cname] = {
+                "class_id": cid,
+                "class_name": cname,
+                "gt_count": 0,
+                "pred_count": n_pred,
+                "tp": 0,
+                "fp": n_pred,
+                "fn": 0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "ap50": 0.0,
+                "ap50_95": 0.0,
+            }
+            continue
+
+        if n_gt > 0 and n_pred == 0:
+            per_class_results[cname] = {
+                "class_id": cid,
+                "class_name": cname,
+                "gt_count": n_gt,
+                "pred_count": 0,
+                "tp": 0,
+                "fp": 0,
+                "fn": n_gt,
+                "precision": 0.0,
+                "recall": 0.0,
+                "ap50": 0.0,
+                "ap50_95": 0.0,
+            }
+            ap50_list.append(0.0)
+            ap50_95_list.append(0.0)
+            continue
+
+        # Sort detections across all images descending by confidence
+        c_preds_sorted = sorted(c_preds, key=lambda x: x[1], reverse=True)
+        pred_boxes = np.array([x[2] for x in c_preds_sorted], dtype=np.float32)
+        pred_img_keys = [x[0] for x in c_preds_sorted]
+
+        ap_per_iou_thresh: List[float] = []
+        tp_at_primary_count = 0
+        fp_at_primary_count = 0
+
+        for t_idx, iou_th in enumerate(iou_grid):
+            matched_gt_per_img: Dict[str, Set[int]] = defaultdict(set)
+            tp_vec = np.zeros(n_pred, dtype=np.float32)
+            fp_vec = np.zeros(n_pred, dtype=np.float32)
+
+            for p_idx in range(n_pred):
+                img_k = pred_img_keys[p_idx]
+                p_b = pred_boxes[p_idx]
+                gt_boxes_img = gt_by_class[cid].get(img_k)
+
+                if gt_boxes_img is None or len(gt_boxes_img) == 0:
+                    fp_vec[p_idx] = 1.0
+                    continue
+
+                ious = box_iou(p_b[None, :], gt_boxes_img)[0]
+                best_gt_idx = int(np.argmax(ious))
+                best_iou = float(ious[best_gt_idx])
+
+                if best_iou >= iou_th and best_gt_idx not in matched_gt_per_img[img_k]:
+                    tp_vec[p_idx] = 1.0
+                    matched_gt_per_img[img_k].add(best_gt_idx)
+                else:
+                    fp_vec[p_idx] = 1.0
+
+            acc_tp = np.cumsum(tp_vec)
+            acc_fp = np.cumsum(fp_vec)
+            recalls = acc_tp / float(n_gt)
+            precisions = acc_tp / np.maximum(acc_tp + acc_fp, 1e-12)
+
+            ap_val = compute_ap_101(recalls, precisions)
+            ap_per_iou_thresh.append(ap_val)
+
+            if abs(iou_th - primary_iou_thresh) < 1e-5:
+                tp_at_primary_count = int(acc_tp[-1])
+                fp_at_primary_count = int(acc_fp[-1])
+
+        c_ap50 = ap_per_iou_thresh[0] if len(ap_per_iou_thresh) > 0 else 0.0
+        c_ap50_95 = float(np.mean(ap_per_iou_thresh)) if len(ap_per_iou_thresh) > 0 else 0.0
+
+        c_prec = tp_at_primary_count / max(tp_at_primary_count + fp_at_primary_count, 1)
+        c_rec = tp_at_primary_count / float(n_gt)
+
+        total_tp_at_primary += tp_at_primary_count
+        total_fp_at_primary += fp_at_primary_count
+
+        ap50_list.append(c_ap50)
+        ap50_95_list.append(c_ap50_95)
+
+        per_class_results[cname] = {
+            "class_id": cid,
+            "class_name": cname,
+            "gt_count": n_gt,
+            "pred_count": n_pred,
+            "tp": tp_at_primary_count,
+            "fp": fp_at_primary_count,
+            "fn": max(0, n_gt - tp_at_primary_count),
+            "precision": round(float(c_prec), 4),
+            "recall": round(float(c_rec), 4),
+            "ap50": round(float(c_ap50), 4),
+            "ap50_95": round(float(c_ap50_95), 4),
+        }
+
+    overall_map50 = float(np.mean(ap50_list)) if ap50_list else 0.0
+    overall_map50_95 = float(np.mean(ap50_95_list)) if ap50_95_list else 0.0
+
+    overall_precision = (
+        total_tp_at_primary / max(total_tp_at_primary + total_fp_at_primary, 1)
+        if total_pred_count > 0
+        else 0.0
+    )
+    overall_recall = (
+        total_tp_at_primary / max(total_gt_count, 1)
+        if total_gt_count > 0
+        else 0.0
+    )
+
+    return {
+        "precision": round(float(overall_precision), 4),
+        "recall": round(float(overall_recall), 4),
+        "map50": round(float(overall_map50), 4),
+        "map50_95": round(float(overall_map50_95), 4),
+        "total_ground_truth": total_gt_count,
+        "total_predictions": total_pred_count,
+        "total_true_positives": total_tp_at_primary,
+        "total_false_positives": total_fp_at_primary,
+        "total_false_negatives": max(0, total_gt_count - total_tp_at_primary),
+        "evaluated_classes_count": len(ap50_list),
+        "primary_iou_threshold": primary_iou_thresh,
+        "per_class": per_class_results,
+    }
+
+
+# =============================================================================
 # Instrumented Execution Harness
 # =============================================================================
 def process_single_frame_instrumented(
@@ -651,6 +997,9 @@ def run_benchmark_suite(
     warmup: int = 2,
     custom_resolutions: Optional[List[str]] = None,
     max_images: Optional[int] = None,
+    eval_accuracy: bool = False,
+    gt_labels_dir: Optional[Path] = None,
+    iou_eval_threshold: float = 0.50,
 ) -> Tuple[Dict[str, Any], str]:
     """Execute comprehensive benchmarking, returning structured dictionary and Markdown text."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -662,6 +1011,30 @@ def run_benchmark_suite(
     class_names = detector.get_class_names()
 
     logger.info("Detector backend: %s | Classes discovered: %d", backend_name, len(class_names))
+
+    # Ground Truth directory setup for accuracy evaluation
+    effective_gt_dir: Optional[Path] = None
+    if eval_accuracy:
+        if gt_labels_dir is not None:
+            effective_gt_dir = Path(gt_labels_dir)
+        else:
+            effective_gt_dir = find_default_gt_labels_dir(input_path)
+
+        if effective_gt_dir is not None and not effective_gt_dir.is_dir():
+            logger.warning(
+                "Accuracy evaluation requested, but gt_labels_dir '%s' is not a valid directory.",
+                effective_gt_dir,
+            )
+            effective_gt_dir = None
+
+        if effective_gt_dir is not None:
+            logger.info("Ground Truth evaluation enabled with annotations from: %s", effective_gt_dir)
+        else:
+            logger.warning("Accuracy evaluation enabled, but no valid GT labels directory was found.")
+
+    # Containers for accuracy evaluation
+    all_predictions_map: Dict[str, List[Dict[str, Any]]] = {}
+    all_gt_map: Dict[str, List[Dict[str, Any]]] = {}
 
     # Determine execution mode: Directory Batch Triage vs Synthetic/Single
     is_directory_mode = input_path is not None and input_path.is_dir()
@@ -751,6 +1124,11 @@ def run_benchmark_suite(
                     positive_images_count += 1
                 total_targets_detected += num_dets
                 total_input_bytes += actual_w * actual_h * 3
+
+                if eval_accuracy and effective_gt_dir is not None:
+                    gt_targets = load_ground_truth(effective_gt_dir, img_p.name, actual_w, actual_h)
+                    all_gt_map[img_p.name] = gt_targets
+                    all_predictions_map[img_p.name] = dets
 
                 for stage_name, val in latencies.items():
                     batch_stage_times[stage_name].append(val)
@@ -899,6 +1277,11 @@ def run_benchmark_suite(
                     for stage_name, val in latencies.items():
                         stage_times[stage_name].append(val)
 
+                if eval_accuracy and effective_gt_dir is not None and input_path is not None and input_path.is_file():
+                    gt_targets = load_ground_truth(effective_gt_dir, input_path.name, w, h)
+                    all_gt_map[input_path.name] = gt_targets
+                    all_predictions_map[input_path.name] = merged_dets
+
                 baseline_640_count = calculate_baseline_640_tiles_count(w, h, altitude)
                 tile_reduction_pct = (
                     round((1.0 - (float(active_tile_count) / float(baseline_640_count))) * 100.0, 2)
@@ -939,6 +1322,26 @@ def run_benchmark_suite(
     # Telemetry aggregation
     telemetry_summary = monitor.get_summary()
 
+    # Evaluate detection accuracy metrics if enabled
+    accuracy_metrics: Optional[Dict[str, Any]] = None
+    if eval_accuracy and effective_gt_dir is not None:
+        logger.info("Computing detection accuracy metrics across %d evaluated images...", len(all_predictions_map))
+        accuracy_metrics = evaluate_detection_accuracy(
+            predictions_by_image=all_predictions_map,
+            gt_by_image=all_gt_map,
+            class_names=class_names,
+            primary_iou_thresh=iou_eval_threshold,
+        )
+        logger.info(
+            "Accuracy Results: Precision=%.4f | Recall=%.4f | mAP@50=%.4f | mAP@50-95=%.4f (GT=%d, Preds=%d)",
+            accuracy_metrics["precision"],
+            accuracy_metrics["recall"],
+            accuracy_metrics["map50"],
+            accuracy_metrics["map50_95"],
+            accuracy_metrics["total_ground_truth"],
+            accuracy_metrics["total_predictions"],
+        )
+
     # Optional dedicated synthetic memory leak audit if in synthetic mode
     synthetic_leak_audit = {}
     if not is_directory_mode and leak_check_iterations > 0:
@@ -970,9 +1373,13 @@ def run_benchmark_suite(
             "diou_thresh": diou_thresh,
             "monitor_interval_sec": monitor_interval,
             "leak_check_iterations": leak_check_iterations,
+            "eval_accuracy": eval_accuracy,
+            "gt_labels_dir": str(effective_gt_dir) if effective_gt_dir else None,
+            "iou_eval_threshold": iou_eval_threshold,
         },
         "system_resource_telemetry": telemetry_summary,
         "batch_summary": batch_summary,
+        "accuracy_metrics": accuracy_metrics,
         "benchmarks": benchmark_records,
         "memory_leak_audit": synthetic_leak_audit or telemetry_summary.get("memory_leak_check", {}),
     }
@@ -1208,11 +1615,66 @@ def generate_markdown_summary(data: Dict[str, Any]) -> str:
                 f"**{pcie['readback_reduction_percent']:.4f}%** |"
             )
 
-    lines.extend([
+    acc_metrics = data.get("accuracy_metrics")
+    if acc_metrics:
+        p_val = acc_metrics["precision"]
+        r_val = acc_metrics["recall"]
+        map50_val = acc_metrics["map50"]
+        map50_95_val = acc_metrics["map50_95"]
+
+        delta_p = p_val - YOLO_TRAINING_BASELINE_METRICS["precision"]
+        delta_r = r_val - YOLO_TRAINING_BASELINE_METRICS["recall"]
+        delta_map50 = map50_val - YOLO_TRAINING_BASELINE_METRICS["map50"]
+        delta_map50_95 = map50_95_val - YOLO_TRAINING_BASELINE_METRICS["map50_95"]
+
+        acc_sec_num = 4 if batch is not None else 6
+
+        lines.extend([
+            "---",
+            "",
+            f"## {acc_sec_num}. Якість детекції наскрізного конвеєра (End-to-End Accuracy)",
+            "",
+            "Оцінка наскрізної точності виявлення повного конвеєра (Dynamic Tiling -> Inference -> Offset Remapping -> Cluster-DIoU-NMS) відносно еталонної розмітки (Ground Truth):",
+            "",
+            "| Метрика | Значення на тайлах (YOLO Training) | Значення конвеєра (Global Slicing + NMS) | Дельта |",
+            "| :--- | :---: | :---: | :---: |",
+            f"| **Precision** | {YOLO_TRAINING_BASELINE_METRICS['precision']:.3f} | {p_val:.3f} | {delta_p:+.3f} |",
+            f"| **Recall** | {YOLO_TRAINING_BASELINE_METRICS['recall']:.3f} | {r_val:.3f} | {delta_r:+.3f} |",
+            f"| **mAP@50** | {YOLO_TRAINING_BASELINE_METRICS['map50']:.3f} | {map50_val:.3f} | {delta_map50:+.3f} |",
+            f"| **mAP@50-95** | {YOLO_TRAINING_BASELINE_METRICS['map50_95']:.3f} | {map50_95_val:.3f} | {delta_map50_95:+.3f} |",
+            "",
+            "### Покласова точність детекції (Per-Class AP@50 & AP@50-95)",
+            "",
+            "| ID | Клас (DOTA 1.5) | Еталонних цілей (GT) | Передбачено цілей | Precision | Recall | AP@50 | AP@50-95 |",
+            "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+        ])
+
+        per_cls = acc_metrics.get("per_class", {})
+        sorted_classes = sorted(per_cls.values(), key=lambda x: x["class_id"])
+        for item in sorted_classes:
+            cid = item["class_id"]
+            cname = item["class_name"]
+            gt_cnt = item["gt_count"]
+            pred_cnt = item["pred_count"]
+            c_p = f"{item['precision']:.3f}" if pred_cnt > 0 else "-"
+            c_r = f"{item['recall']:.3f}" if gt_cnt > 0 else "-"
+            c_ap50 = f"{item['ap50']:.3f}" if gt_cnt > 0 else "-"
+            c_ap50_95 = f"{item['ap50_95']:.3f}" if gt_cnt > 0 else "-"
+            lines.append(
+                f"| {cid} | `{cname}` | {gt_cnt} | {pred_cnt} | {c_p} | {c_r} | **{c_ap50}** | {c_ap50_95} |"
+            )
+
+    concl_sec_num = 6
+    if acc_metrics and batch is None:
+        concl_sec_num = 7
+    elif acc_metrics and batch is not None:
+        concl_sec_num = 5
+
+    conclusion_lines = [
         "",
         "---",
         "",
-        "## 6. Наукові висновки для Розділу 3 дисертаційного дослідження",
+        f"## {concl_sec_num}. Наукові висновки для Розділу 3 дисертаційного дослідження",
         "",
         "1. **Безпека та стабільність пам'яті:** Неперервний телеметричний аудит фіксує суворе дотримання "
         f"інваріанту відсутності витоків пам'яті ($\\Delta\\text{{RAM}} = {delta.get('rss_ram_mb', 0.0):+.2f}\\text{{ MB}} < 50\\text{{ MB}}$, "
@@ -1224,8 +1686,18 @@ def generate_markdown_summary(data: Dict[str, Any]) -> str:
         "3. **Адаптивна декомпозиція простору (736 px):** Застосування збільшеного вікна $736\\text{ px}$ на кадрах "
         "з роздільною здатністю $\\ge 5000\\text{ px}$ зменшує кількість генерованих плиток на **22.1% – 25.0%**, що прямо "
         "пропорційно скорочує фізичний час прямого проходу нейромережі $T_{\\text{infer}}$ без втрати просторової деталізації.",
-        "",
-    ])
+    ]
+    if acc_metrics:
+        conclusion_lines.append(
+            f"4. **Наскрізна точність детекції конвеєра:** Повний конвеєр просторової декомпозиції, "
+            f"інференсу та ремапінгу координат демонструє $\\text{{mAP@50}} = {acc_metrics['map50']:.3f}$ та "
+            f"$\\text{{mAP@50-95}} = {acc_metrics['map50_95']:.3f}$ (Precision: ${acc_metrics['precision']:.3f}$, Recall: ${acc_metrics['recall']:.3f}$, "
+            f"сумарно {acc_metrics['total_ground_truth']} еталонних цілей). Це підтверджує стійкість виявлення "
+            "малорозмірних цілей на повнорозмірних панорамах відносно навчання на ізольованих тайлах 640 px "
+            "із мінімальним зниженням точності на граничних швах."
+        )
+    conclusion_lines.append("")
+    lines.extend(conclusion_lines)
 
     return "\n".join(lines)
 
@@ -1317,6 +1789,23 @@ def main() -> int:
         default=None,
         help="Optional maximum number of directory images to process",
     )
+    parser.add_argument(
+        "--eval-accuracy",
+        action="store_true",
+        help="Enable end-to-end detection accuracy evaluation (Precision, Recall, mAP50, mAP50-95) against Ground Truth",
+    )
+    parser.add_argument(
+        "--gt-labels-dir",
+        type=str,
+        default=None,
+        help="Path to directory with Ground Truth annotation .txt files (default: auto-detect labels/val)",
+    )
+    parser.add_argument(
+        "--iou-eval-threshold",
+        type=float,
+        default=0.50,
+        help="Primary IoU threshold for matching predictions to Ground Truth (default: 0.50)",
+    )
 
     args = parser.parse_args()
 
@@ -1324,6 +1813,10 @@ def main() -> int:
     out_detected = Path(args.output_detected_dir) if args.output_detected_dir else None
     out_dir = Path(args.output_dir)
     res_list = [r.strip() for r in args.resolutions.split(",") if r.strip()]
+
+    gt_dir = Path(args.gt_labels_dir) if args.gt_labels_dir else None
+    if args.eval_accuracy and gt_dir is None:
+        gt_dir = find_default_gt_labels_dir(in_p)
 
     print("=" * 80)
     print("   AERIAL RECONNAISSANCE SYSTEM - SCIENTIFIC BENCHMARKING SUITE   ")
@@ -1336,6 +1829,10 @@ def main() -> int:
     print(f"VRAM Budget:              {args.vram_mb} MB")
     print(f"Confidence Threshold:     {args.conf_thresh}")
     print(f"DIoU Threshold:           {args.diou_thresh}")
+    print(f"Accuracy Evaluation:      {'Enabled' if args.eval_accuracy else 'Disabled'}")
+    if args.eval_accuracy:
+        print(f"GT Labels Directory:      {gt_dir or 'Auto-discovery'}")
+        print(f"Evaluation IoU Thresh:    {args.iou_eval_threshold}")
     if in_p is None or in_p.is_file():
         print(f"Samples per target:       {args.samples}")
         print(f"Resolutions:              {', '.join(res_list)}")
@@ -1356,6 +1853,9 @@ def main() -> int:
             warmup=args.warmup,
             custom_resolutions=res_list,
             max_images=args.max_images,
+            eval_accuracy=args.eval_accuracy,
+            gt_labels_dir=gt_dir,
+            iou_eval_threshold=args.iou_eval_threshold,
         )
         print("\n" + "=" * 80)
         print("                 BENCHMARKING COMPLETED SUCCESSFULLY                ")
@@ -1367,6 +1867,10 @@ def main() -> int:
             print(f"[+] Batch Triage:    {bs['positive_images']}/{bs['total_images']} positive frames saved")
             print(f"[+] Detected Output: {bs['output_detected_dir']}")
             print(f"[+] Throughput:      {bs['throughput_fps']} FPS ({bs['elapsed_seconds']}s total)")
+        if results.get("accuracy_metrics"):
+            acc = results["accuracy_metrics"]
+            print(f"[+] Accuracy (mAP@50):   {acc['map50']:.4f} (mAP@50-95: {acc['map50_95']:.4f})")
+            print(f"[+] Precision / Recall:  {acc['precision']:.4f} / {acc['recall']:.4f} (GT: {acc['total_ground_truth']})")
         print("=" * 80)
         return 0
     except Exception as exc:

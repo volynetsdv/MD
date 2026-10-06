@@ -41,6 +41,8 @@ echo "[СТАРТ] Обробка зображень та неперервний
 
 QT_QPA_PLATFORM=offscreen python3 scripts/benchmark_system.py \
     --input "$INPUT_DIR" \
+    --gt-labels-dir "data/dota_v1.5/labels/val" \
+    --eval-accuracy \
     --output-detected-dir "$DETECTED_DIR" \
     --output-dir "$REPORTS_DIR" \
     --monitor-interval 0.1 \
