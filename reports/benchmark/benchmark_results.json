@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "timestamp": "2026-10-06T15:38:59.983515+00:00",
+    "timestamp": "2026-10-06T16:21:13.447768+00:00",
     "hardware": {
       "os": "Linux 7.2.8-200.nobara.fc44.x86_64 (x86_64)",
       "python_version": "3.12.3",
@@ -36,75 +36,75 @@
   },
   "system_resource_telemetry": {
     "baseline": {
-      "rss_ram_mb": 1914.8,
-      "sys_ram_mb": 16009.25,
-      "vram_alloc_mb": 3760.44,
-      "vram_reserved_mb": 3760.44
+      "rss_ram_mb": 1912.27,
+      "sys_ram_mb": 15761.98,
+      "vram_alloc_mb": 3874.38,
+      "vram_reserved_mb": 3874.38
     },
     "final": {
-      "rss_ram_mb": 2006.35,
-      "sys_ram_mb": 16370.84,
-      "vram_alloc_mb": 3756.31,
-      "vram_reserved_mb": 3756.31
+      "rss_ram_mb": 2004.44,
+      "sys_ram_mb": 15959.7,
+      "vram_alloc_mb": 3865.5,
+      "vram_reserved_mb": 3865.5
     },
     "delta": {
-      "rss_ram_mb": 91.55,
-      "vram_alloc_mb": -4.12,
-      "vram_reserved_mb": -4.12
+      "rss_ram_mb": 92.18,
+      "vram_alloc_mb": -8.88,
+      "vram_reserved_mb": -8.88
     },
     "stats": {
       "rss_ram_mb": {
-        "mean": 2030.92,
-        "std": 48.2,
-        "min": 1915.22,
-        "max": 2340.29,
-        "p50": 2021.11,
-        "p90": 2107.95,
-        "p99": 2193.05
+        "mean": 2029.05,
+        "std": 48.05,
+        "min": 1912.73,
+        "max": 2327.9,
+        "p50": 2019.5,
+        "p90": 2106.05,
+        "p99": 2189.38
       },
       "vram_alloc_mb": {
-        "mean": 3759.08,
-        "std": 4.17,
-        "min": 3754.81,
-        "max": 3773.12,
-        "p50": 3756.38,
-        "p90": 3764.94,
-        "p99": 3773.12
+        "mean": 3865.99,
+        "std": 1.72,
+        "min": 3865.44,
+        "max": 3874.38,
+        "p50": 3865.5,
+        "p90": 3866.94,
+        "p99": 3874.38
       },
       "vram_reserved_mb": {
-        "mean": 3759.08,
-        "std": 4.17,
-        "min": 3754.81,
-        "max": 3773.12,
-        "p50": 3756.38,
-        "p90": 3764.94,
-        "p99": 3773.12
+        "mean": 3865.99,
+        "std": 1.72,
+        "min": 3865.44,
+        "max": 3874.38,
+        "p50": 3865.5,
+        "p90": 3866.94,
+        "p99": 3874.38
       },
       "gpu_compute_util_pct": {
-        "mean": 46.12,
-        "std": 21.11,
-        "min": 2.0,
+        "mean": 45.05,
+        "std": 21.45,
+        "min": 0.0,
         "max": 71.0,
         "p50": 48.0,
         "p90": 70.0,
         "p99": 71.0
       },
       "cpu_util_pct": {
-        "mean": 17.22,
-        "std": 5.29,
+        "mean": 12.9,
+        "std": 3.9,
         "min": 0.0,
-        "max": 63.9,
-        "p50": 15.9,
-        "p90": 23.6,
-        "p99": 33.88
+        "max": 41.5,
+        "p50": 11.5,
+        "p90": 18.3,
+        "p99": 25.9
       }
     },
     "memory_leak_check": {
-      "delta_rss_mb": 91.55,
+      "delta_rss_mb": 92.18,
       "threshold_mb": 50.0,
       "status": "FAIL"
     },
-    "samples_count": 666
+    "samples_count": 647
   },
   "batch_summary": {
     "total_images": 458,
@@ -113,81 +113,81 @@
     "hit_rate_percent": 100.0,
     "total_targets_detected": 85650,
     "average_targets_per_positive": 187.01,
-    "elapsed_seconds": 75.27,
-    "throughput_fps": 6.08,
+    "elapsed_seconds": 73.46,
+    "throughput_fps": 6.23,
     "output_detected_dir": "data/dota_v1.5/images/val_detected",
     "stage_latencies_ms": {
       "T_read": {
-        "mean": 17.87,
-        "std": 21.87,
-        "min": 0.75,
-        "max": 170.83,
-        "p50": 7.85,
-        "p90": 43.36,
-        "p99": 95.32
+        "mean": 17.78,
+        "std": 21.82,
+        "min": 0.64,
+        "max": 173.97,
+        "p50": 8.02,
+        "p90": 43.03,
+        "p99": 97.07
       },
       "T_tiling": {
-        "mean": 0.14,
+        "mean": 0.13,
         "std": 0.1,
         "min": 0.03,
         "max": 0.62,
-        "p50": 0.1,
-        "p90": 0.29,
-        "p99": 0.4
+        "p50": 0.09,
+        "p90": 0.28,
+        "p99": 0.37
       },
       "T_slice": {
-        "mean": 4.89,
-        "std": 19.11,
+        "mean": 4.85,
+        "std": 19.0,
         "min": 0.01,
-        "max": 167.56,
+        "max": 172.56,
         "p50": 0.08,
         "p90": 0.39,
-        "p99": 87.3
+        "p99": 85.59
       },
       "T_infer": {
-        "mean": 105.9,
-        "std": 111.56,
-        "min": 4.44,
-        "max": 781.76,
-        "p50": 59.37,
-        "p90": 260.32,
-        "p99": 429.74
+        "mean": 102.39,
+        "std": 108.56,
+        "min": 3.99,
+        "max": 749.37,
+        "p50": 57.48,
+        "p90": 251.22,
+        "p99": 440.33
       },
       "T_remap": {
-        "mean": 5.28,
-        "std": 15.56,
-        "min": 0.07,
-        "max": 194.79,
-        "p50": 1.44,
-        "p90": 10.63,
-        "p99": 66.7
+        "mean": 5.3,
+        "std": 15.65,
+        "min": 0.08,
+        "max": 196.42,
+        "p50": 1.41,
+        "p90": 10.66,
+        "p99": 67.1
       },
       "T_nms": {
-        "mean": 19.82,
-        "std": 161.57,
-        "min": 0.19,
-        "max": 2778.21,
-        "p50": 1.04,
-        "p90": 10.54,
-        "p99": 308.02
+        "mean": 19.78,
+        "std": 161.7,
+        "min": 0.17,
+        "max": 2777.43,
+        "p50": 0.99,
+        "p90": 10.48,
+        "p99": 310.2
       },
       "T_io_write": {
-        "mean": 7.92,
-        "std": 10.73,
-        "min": 2.1,
-        "max": 133.08,
-        "p50": 5.58,
-        "p90": 12.52,
-        "p99": 55.22
+        "mean": 7.74,
+        "std": 10.74,
+        "min": 1.87,
+        "max": 135.61,
+        "p50": 5.41,
+        "p90": 12.43,
+        "p99": 54.53
       },
       "T_total": {
-        "mean": 161.96,
-        "std": 275.83,
-        "min": 8.0,
-        "max": 3640.55,
-        "p50": 79.59,
-        "p90": 335.26,
-        "p99": 1033.97
+        "mean": 158.11,
+        "std": 275.89,
+        "min": 6.86,
+        "max": 3724.79,
+        "p50": 77.77,
+        "p90": 328.36,
+        "p99": 1022.1
       }
     },
     "pcie_bandwidth_saved_percent": 99.9716
@@ -417,7 +417,7 @@
   },
   "benchmarks": {},
   "memory_leak_audit": {
-    "delta_rss_mb": 91.55,
+    "delta_rss_mb": 92.18,
     "threshold_mb": 50.0,
     "status": "FAIL"
   }

@@ -25,6 +25,27 @@ def main() -> int:
     app.setApplicationName("Aerial Reconnaissance Workstation")
     app.setOrganizationName("Defense Intelligence Systems")
 
+    # Dark tactical base palette to eliminate any unstyled white fallback areas (QPalette.Base = #080f1e)
+    from PySide6.QtGui import QColor, QPalette
+    from gui.styles import DARK_TACTICAL_STYLE
+
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#0b1326"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#e2e8f0"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#080f1e"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#0c162d"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#0f1d3a"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#f8fafc"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#e2e8f0"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#0f1d3a"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#e2e8f0"))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.Link, QColor("#38bdf8"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#1e3a6e"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    app.setPalette(palette)
+    app.setStyleSheet(DARK_TACTICAL_STYLE)
+
     # Verify model weights availability (download if missing)
     try:
         from core.config_manager import get_config

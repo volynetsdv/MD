@@ -236,9 +236,9 @@ class TestMainWindowRefactoring:
         # Left panel controls
         assert win.btn_open is not None
         assert win.btn_open_folder is not None
-        assert win.btn_load_mock_8k is not None
         assert win.btn_open_file is win.btn_open
-        assert win.btn_test_8k is win.btn_load_mock_8k
+        assert not hasattr(win, "btn_test_8k") or win.btn_test_8k is None
+        assert not hasattr(win, "btn_load_mock_8k") or win.btn_load_mock_8k is None
 
         # Top toolbar action texts
         tb_actions = win.toolbar.actions()
@@ -261,6 +261,7 @@ class TestMainWindowRefactoring:
         assert "#0f1d3a" in DARK_TACTICAL_STYLE
         assert "#080f1e" in DARK_TACTICAL_STYLE
         assert "#1e3563" in DARK_TACTICAL_STYLE
+        assert "QFileDialog" in DARK_TACTICAL_STYLE
 
         win = MainWindow()
         scroll_areas = win.findChildren(QScrollArea)

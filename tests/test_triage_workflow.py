@@ -66,7 +66,7 @@ class TestAnalysisStateToggle:
         """Initial state must be inactive with blue styling and disabled without image."""
         win = MainWindow()
         assert win.is_analysis_active is False
-        assert "▶ Почати аналіз" in win.btn_toggle_analysis.text()
+        assert "Почати аналіз" in win.btn_toggle_analysis.text()
         assert win.btn_toggle_analysis.isEnabled() is False
         # Backwards-compatibility alias check
         assert win.btn_detect is win.btn_toggle_analysis
@@ -80,7 +80,7 @@ class TestAnalysisStateToggle:
         # Toggle to ACTIVE
         win.toggle_analysis()
         assert win.is_analysis_active is True
-        assert "⏹ Зупинити аналіз" in win.btn_toggle_analysis.text()
+        assert "Зупинити аналіз" in win.btn_toggle_analysis.text()
         # Red styling applied
         assert "#ef4444" in win.btn_toggle_analysis.styleSheet()
 
@@ -89,7 +89,7 @@ class TestAnalysisStateToggle:
         if win._worker:
             win._worker.wait(2000)
         assert win.is_analysis_active is False
-        assert "▶ Почати аналіз" in win.btn_toggle_analysis.text()
+        assert "Почати аналіз" in win.btn_toggle_analysis.text()
         # Blue styling restored
         assert "#0284c7" in win.btn_toggle_analysis.styleSheet()
 

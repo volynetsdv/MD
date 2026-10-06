@@ -10,6 +10,147 @@ QMainWindow, QDialog {
     color: #e2e8f0;
 }
 
+/* ========================================================================= */
+/*               DIALOG WINDOWS & FILE EXPLORER (QFileDialog)               */
+/* ========================================================================= */
+/* 1. Головне вікно діалогу */
+QFileDialog {
+    background-color: #0b1326;
+    color: #e2e8f0;
+}
+
+/* 2. Область перегляду файлів та каталогів (Таблиця / Дерево / Списки) */
+QFileDialog QTreeView, 
+QFileDialog QListView, 
+QFileDialog QTableView,
+QFileDialog QAbstractItemView {
+    background-color: #080f1e;
+    alternate-background-color: #0c162d;
+    color: #e2e8f0;
+    border: 1px solid #1e3563;
+    border-radius: 4px;
+    selection-background-color: #1e3a6e;
+    selection-color: #38bdf8;
+    outline: none;
+    font-size: 13px;
+}
+
+/* Внутрішній viewport для надійного усунення білого фону */
+QFileDialog QAbstractScrollArea::viewport,
+QFileDialog QTreeView::viewport,
+QFileDialog QListView::viewport,
+QFileDialog QTableView::viewport,
+QFileDialog QAbstractItemView::viewport {
+    background-color: #080f1e;
+    color: #e2e8f0;
+}
+
+/* 3. Елементи списку при наведенні та виборі */
+QFileDialog QTreeView::item,
+QFileDialog QListView::item,
+QFileDialog QTableView::item {
+    color: #e2e8f0;
+    padding: 3px;
+}
+
+QFileDialog QTreeView::item:hover,
+QFileDialog QListView::item:hover,
+QFileDialog QTableView::item:hover {
+    background-color: #132347;
+    color: #38bdf8;
+}
+
+QFileDialog QTreeView::item:selected,
+QFileDialog QListView::item:selected,
+QFileDialog QTableView::item:selected {
+    background-color: #1e3a6e;
+    color: #ffffff;
+}
+
+/* 4. Заголовки колонок (Name, Size, Type, Date Modified) */
+QFileDialog QHeaderView,
+QFileDialog QHeaderView::section {
+    background-color: #0f1d3a;
+    color: #94a3b8;
+    border: none;
+    border-right: 1px solid #1e3563;
+    border-bottom: 1px solid #1e3563;
+    padding: 6px 8px;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+/* 5. Ліва панель швидкого доступу (Sidebar: Computer, Places) */
+QFileDialog QWidget#sidebar,
+QFileDialog QToolBox,
+QFileDialog QTreeView#sidebar,
+QFileDialog QListView#sidebar,
+QFileDialog QFrame#sidebar {
+    background-color: #060b17;
+    color: #cbd5e1;
+    border-right: 1px solid #1e3563;
+}
+
+/* 6. Поля введення (Шлях, Назва папки/файлу, Фільтр типів) */
+QFileDialog QLineEdit,
+QFileDialog QComboBox {
+    background-color: #0f1d3a;
+    color: #f1f5f9;
+    border: 1px solid #1e3563;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 13px;
+}
+
+QFileDialog QLineEdit:focus,
+QFileDialog QComboBox:focus {
+    border: 1px solid #38bdf8;
+}
+
+QFileDialog QComboBox QAbstractItemView {
+    background-color: #0f1d3a;
+    color: #f1f5f9;
+    border: 1px solid #1e3563;
+    selection-background-color: #1e3a6e;
+    selection-color: #ffffff;
+}
+
+/* 7. Кнопки (Choose, Cancel, навігаційні стрілки вгору/назад) */
+QFileDialog QPushButton,
+QFileDialog QToolButton {
+    background-color: #0f1d3a;
+    color: #e2e8f0;
+    border: 1px solid #1e3563;
+    border-radius: 4px;
+    padding: 6px 14px;
+    min-width: 75px;
+    font-weight: 500;
+}
+
+QFileDialog QPushButton:hover,
+QFileDialog QToolButton:hover {
+    background-color: #1e3a6e;
+    color: #38bdf8;
+    border-color: #38bdf8;
+}
+
+QFileDialog QPushButton:pressed,
+QFileDialog QToolButton:pressed {
+    background-color: #0284c7;
+    color: #ffffff;
+}
+
+/* 8. Текстові мітки (Look in:, Directory:, Files of type:) */
+QFileDialog QLabel {
+    color: #94a3b8;
+    font-size: 13px;
+}
+
+QFileDialog QSplitter::handle {
+    background-color: #1e3563;
+}
+
+
 QWidget {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     font-size: 13px;
