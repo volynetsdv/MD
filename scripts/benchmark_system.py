@@ -1756,8 +1756,8 @@ def main() -> int:
     parser.add_argument(
         "--conf-thresh",
         type=float,
-        default=0.20,
-        help="Confidence threshold for detection filtering (default: 0.20)",
+        default=0.25,
+        help="Confidence threshold for detection filtering (default: 0.25)",
     )
     parser.add_argument(
         "--diou-thresh",

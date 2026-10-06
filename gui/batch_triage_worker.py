@@ -47,7 +47,7 @@ class BatchTriageWorker(QThread):
         output_folder: Optional[Union[str, Path]] = None,
         altitude: float = 150.0,
         vram_mb: int = 2048,
-        conf_threshold: float = 0.20,
+        conf_threshold: float = 0.25,
         diou_threshold: float = 0.45,
         detector: Optional[Any] = None,
         use_cache: bool = True,

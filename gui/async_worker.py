@@ -94,24 +94,30 @@ def py_calculate_tiling_params(
     if tile_size == 640 and is_ultra_large:
         tile_size = effective_slice_size
 
-    # Overlap clamped [0.1, 0.4]
-    overlap = max(0.1, min(0.4, 0.1 + (altitude / 500.0)))
+    # Overlap clamped to [0.15, 0.20]
+    overlap = max(0.15, min(0.20, 0.15 + (altitude / 3000.0)))
     step_x = max(1, int(round(tile_size * (1.0 - overlap))))
     step_y = step_x
 
-    cols = (width + step_x - 1) // step_x
-    rows = (height + step_y - 1) // step_y
+    cols = 1 if width <= tile_size else max(1, int(math.ceil((width - tile_size) / step_x)) + 1)
+    rows = 1 if height <= tile_size else max(1, int(math.ceil((height - tile_size) / step_y)) + 1)
+
+    # Safeguard against excessive tiling on medium frames (max(W, H) <= 1500px)
+    if max(width, height) <= 1500:
+        cols = min(cols, 3)
+        rows = min(rows, 3)
+        if cols * rows > 6:
+            if width <= height:
+                cols = 2
+            else:
+                rows = 2
 
     tiles: List[Rect] = []
     for r in range(rows):
-        y = r * step_y
-        if y >= height:
-            break
+        y = 0 if rows <= 1 else max(0, min(height - tile_size, int(round(r * (height - tile_size) / (rows - 1)))))
         h = min(tile_size, height - y)
         for c in range(cols):
-            x = c * step_x
-            if x >= width:
-                break
+            x = 0 if cols <= 1 else max(0, min(width - tile_size, int(round(c * (width - tile_size) / (cols - 1)))))
             w = min(tile_size, width - x)
             tiles.append(Rect(x=x, y=y, w=w, h=h))
 
@@ -242,7 +248,18 @@ def py_cluster_diou_nms(
             c2 = (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2
 
             diou = np.where(c2 > 1e-7, iou - (d2 / c2), iou)
-            to_suppress = sub_idx[diou >= diou_threshold]
+
+            # Adaptive threshold for seam candidates originating from different tiles
+            curr_tile = cls_boxes[i].tile_id
+            sub_tiles = np.array([cls_boxes[k].tile_id for k in sub_idx], dtype=np.int32)
+            diff_tiles = (curr_tile >= 0) & (sub_tiles >= 0) & (sub_tiles != curr_tile)
+            if np.any(diff_tiles):
+                ratio = np.clip(np.where(c2 > 1e-7, d2 / c2, 1.0), 0.0, 1.0)
+                eff_thresh = np.where(diff_tiles, diou_threshold * (0.70 + 0.30 * ratio), diou_threshold)
+            else:
+                eff_thresh = diou_threshold
+
+            to_suppress = sub_idx[diou >= eff_thresh]
             if to_suppress.size > 0:
                 suppressed[to_suppress] = True
 

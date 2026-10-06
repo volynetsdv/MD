@@ -363,7 +363,31 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
                     }
 
                     float diou = calculate_diou(bi, bj);
-                    if (diou >= diou_threshold)
+
+                    // Adaptive threshold for seam objects based on center distance
+                    float eff_thresh = diou_threshold;
+                    if (bi.tile_id >= 0 && bj.tile_id >= 0 && bi.tile_id != bj.tile_id)
+                    {
+                        const float c_ax = bi.x + bi.w * 0.5f;
+                        const float c_ay = bi.y + bi.h * 0.5f;
+                        const float c_bx = bj.x + bj.w * 0.5f;
+                        const float c_by = bj.y + bj.h * 0.5f;
+                        const float d2 = (c_ax - c_bx) * (c_ax - c_bx) + (c_ay - c_by) * (c_ay - c_by);
+
+                        const float enc_x1 = std::min(bi.x, bj.x);
+                        const float enc_y1 = std::min(bi.y, bj.y);
+                        const float enc_x2 = std::max(bi.x + bi.w, bj.x + bj.w);
+                        const float enc_y2 = std::max(bi.y + bi.h, bj.y + bj.h);
+                        const float c2 = (enc_x2 - enc_x1) * (enc_x2 - enc_x1) + (enc_y2 - enc_y1) * (enc_y2 - enc_y1);
+
+                        if (c2 > 1e-7f)
+                        {
+                            const float ratio = std::min(1.0f, d2 / c2);
+                            eff_thresh = diou_threshold * (0.70f + 0.30f * ratio);
+                        }
+                    }
+
+                    if (diou >= eff_thresh)
                     {
                         adj[i].push_back(j);
                         adj[j].push_back(i);

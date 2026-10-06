@@ -26,7 +26,7 @@ if __name__ == "__main__":
         width=7305, height=6759, altitude=150.0, vram_mb=2048
     )
     assert dota_cfg.tile_size == 736
-    assert len(dota_cfg.tiles) == 272
+    assert len(dota_cfg.tiles) == 156
     reduction = (360 - len(dota_cfg.tiles)) / 360.0
     assert reduction >= 0.20  # >= 20% reduction compared to base 360 tiles
 
@@ -44,6 +44,14 @@ if __name__ == "__main__":
     g = pytiling_core.remap_offsets(local_det, t0, 640, 0)
     assert abs(g.x - 350.0) <= 1.0
     assert abs(g.y - 280.0) <= 1.0
+
+    # Acceptance Criteria: Medium frame 1382 x 1394 generates <= 6 tiles
+    p0945_cfg = pytiling_core.calculate_tiling_params(
+        width=1382, height=1394, altitude=150.0, vram_mb=2048
+    )
+    assert len(p0945_cfg.tiles) <= 6
+    assert p0945_cfg.grid_cols <= 3 and p0945_cfg.grid_rows <= 3
+    assert p0945_cfg.tile_size == 640
 
     print("test_binding.py passed successfully!")
 
