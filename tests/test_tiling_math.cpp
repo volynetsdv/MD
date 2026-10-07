@@ -28,8 +28,10 @@ int main()
         static_cast<float>(cfg.tile_size) * (1.0f - cfg.overlap)));
     assert(step > 0);
 
-    const int expected_cols = (image_width + step - 1) / step;
-    const int expected_rows = (image_height + step - 1) / step;
+    const int expected_cols = image_width <= cfg.tile_size ? 1 : static_cast<int>(std::ceil(
+        static_cast<float>(image_width - cfg.tile_size) / static_cast<float>(step))) + 1;
+    const int expected_rows = image_height <= cfg.tile_size ? 1 : static_cast<int>(std::ceil(
+        static_cast<float>(image_height - cfg.tile_size) / static_cast<float>(step))) + 1;
     assert(cfg.grid_cols == expected_cols);
     assert(cfg.grid_rows == expected_rows);
 
@@ -61,9 +63,9 @@ int main()
         // 2. Verify total tile count is reduced by >= 20% compared to base 360 tiles
         const size_t base_tile_count = 360;
         const size_t actual_tile_count = dota_cfg.tiles.size();
-        assert(actual_tile_count == 272); // 17 cols x 16 rows
+        assert(actual_tile_count == 156); // 13 cols x 12 rows
         const float reduction = 1.0f - static_cast<float>(actual_tile_count) / static_cast<float>(base_tile_count);
-        assert(reduction >= 0.20f); // 24.4% >= 20%
+        assert(reduction >= 0.20f); // 56.6% >= 20%
 
         // 3. Verify offset mapping round-trip precision within +- 1 px
         // Select an interior tile of size 736x736
@@ -92,6 +94,14 @@ int main()
         TilingConfig std_cfg = calculate_tiling_params(4000, 3000, 150.0f, 2048);
         assert(std_cfg.tile_size == 640);
         assert(static_cast<float>(std_cfg.tiles.front().w) / 640.0f == 1.0f);
+    }
+
+    // --- Medium frame test (1382 x 1394) generating <= 6 tiles ---
+    {
+        TilingConfig p0945_cfg = calculate_tiling_params(1382, 1394, 150.0f, 2048);
+        assert(p0945_cfg.tiles.size() <= 6);
+        assert(p0945_cfg.grid_cols <= 3 && p0945_cfg.grid_rows <= 3);
+        assert(p0945_cfg.tile_size == 640);
     }
 
     std::printf("All tiling_math tests passed.\n");

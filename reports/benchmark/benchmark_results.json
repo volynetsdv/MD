@@ -1,0 +1,424 @@
+{
+  "metadata": {
+    "timestamp": "2026-10-06T16:21:13.447768+00:00",
+    "hardware": {
+      "os": "Linux 7.2.8-200.nobara.fc44.x86_64 (x86_64)",
+      "python_version": "3.12.3",
+      "cpu_count_logical": 12,
+      "cpu_count_physical": 6,
+      "total_ram_gb": 46.95,
+      "gpu_available": true,
+      "gpu_name": "NVIDIA GeForce RTX 5070 Ti",
+      "gpu_vram_mb": 15838.8,
+      "cuda_version": "13.0",
+      "onnxruntime_providers": [
+        "TensorrtExecutionProvider",
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ]
+    },
+    "backend": "CUDAExecutionProviderBackend",
+    "classes_count": 16
+  },
+  "config": {
+    "input_path": "data/dota_v1.5/images/val",
+    "output_detected_dir": "data/dota_v1.5/images/val_detected",
+    "samples": 10,
+    "altitude": 150.0,
+    "vram_mb": 2048,
+    "conf_thresh": 0.2,
+    "diou_thresh": 0.5,
+    "monitor_interval_sec": 0.1,
+    "leak_check_iterations": 50,
+    "eval_accuracy": true,
+    "gt_labels_dir": "data/dota_v1.5/labels/val",
+    "iou_eval_threshold": 0.5
+  },
+  "system_resource_telemetry": {
+    "baseline": {
+      "rss_ram_mb": 1912.27,
+      "sys_ram_mb": 15761.98,
+      "vram_alloc_mb": 3874.38,
+      "vram_reserved_mb": 3874.38
+    },
+    "final": {
+      "rss_ram_mb": 2004.44,
+      "sys_ram_mb": 15959.7,
+      "vram_alloc_mb": 3865.5,
+      "vram_reserved_mb": 3865.5
+    },
+    "delta": {
+      "rss_ram_mb": 92.18,
+      "vram_alloc_mb": -8.88,
+      "vram_reserved_mb": -8.88
+    },
+    "stats": {
+      "rss_ram_mb": {
+        "mean": 2029.05,
+        "std": 48.05,
+        "min": 1912.73,
+        "max": 2327.9,
+        "p50": 2019.5,
+        "p90": 2106.05,
+        "p99": 2189.38
+      },
+      "vram_alloc_mb": {
+        "mean": 3865.99,
+        "std": 1.72,
+        "min": 3865.44,
+        "max": 3874.38,
+        "p50": 3865.5,
+        "p90": 3866.94,
+        "p99": 3874.38
+      },
+      "vram_reserved_mb": {
+        "mean": 3865.99,
+        "std": 1.72,
+        "min": 3865.44,
+        "max": 3874.38,
+        "p50": 3865.5,
+        "p90": 3866.94,
+        "p99": 3874.38
+      },
+      "gpu_compute_util_pct": {
+        "mean": 45.05,
+        "std": 21.45,
+        "min": 0.0,
+        "max": 71.0,
+        "p50": 48.0,
+        "p90": 70.0,
+        "p99": 71.0
+      },
+      "cpu_util_pct": {
+        "mean": 12.9,
+        "std": 3.9,
+        "min": 0.0,
+        "max": 41.5,
+        "p50": 11.5,
+        "p90": 18.3,
+        "p99": 25.9
+      }
+    },
+    "memory_leak_check": {
+      "delta_rss_mb": 92.18,
+      "threshold_mb": 50.0,
+      "status": "FAIL"
+    },
+    "samples_count": 647
+  },
+  "batch_summary": {
+    "total_images": 458,
+    "positive_images": 458,
+    "negative_images": 0,
+    "hit_rate_percent": 100.0,
+    "total_targets_detected": 85650,
+    "average_targets_per_positive": 187.01,
+    "elapsed_seconds": 73.46,
+    "throughput_fps": 6.23,
+    "output_detected_dir": "data/dota_v1.5/images/val_detected",
+    "stage_latencies_ms": {
+      "T_read": {
+        "mean": 17.78,
+        "std": 21.82,
+        "min": 0.64,
+        "max": 173.97,
+        "p50": 8.02,
+        "p90": 43.03,
+        "p99": 97.07
+      },
+      "T_tiling": {
+        "mean": 0.13,
+        "std": 0.1,
+        "min": 0.03,
+        "max": 0.62,
+        "p50": 0.09,
+        "p90": 0.28,
+        "p99": 0.37
+      },
+      "T_slice": {
+        "mean": 4.85,
+        "std": 19.0,
+        "min": 0.01,
+        "max": 172.56,
+        "p50": 0.08,
+        "p90": 0.39,
+        "p99": 85.59
+      },
+      "T_infer": {
+        "mean": 102.39,
+        "std": 108.56,
+        "min": 3.99,
+        "max": 749.37,
+        "p50": 57.48,
+        "p90": 251.22,
+        "p99": 440.33
+      },
+      "T_remap": {
+        "mean": 5.3,
+        "std": 15.65,
+        "min": 0.08,
+        "max": 196.42,
+        "p50": 1.41,
+        "p90": 10.66,
+        "p99": 67.1
+      },
+      "T_nms": {
+        "mean": 19.78,
+        "std": 161.7,
+        "min": 0.17,
+        "max": 2777.43,
+        "p50": 0.99,
+        "p90": 10.48,
+        "p99": 310.2
+      },
+      "T_io_write": {
+        "mean": 7.74,
+        "std": 10.74,
+        "min": 1.87,
+        "max": 135.61,
+        "p50": 5.41,
+        "p90": 12.43,
+        "p99": 54.53
+      },
+      "T_total": {
+        "mean": 158.11,
+        "std": 275.89,
+        "min": 6.86,
+        "max": 3724.79,
+        "p50": 77.77,
+        "p90": 328.36,
+        "p99": 1022.1
+      }
+    },
+    "pcie_bandwidth_saved_percent": 99.9716
+  },
+  "accuracy_metrics": {
+    "precision": 0.6501,
+    "recall": 0.8004,
+    "map50": 0.6245,
+    "map50_95": 0.401,
+    "total_ground_truth": 69565,
+    "total_predictions": 85650,
+    "total_true_positives": 55683,
+    "total_false_positives": 29967,
+    "total_false_negatives": 13882,
+    "evaluated_classes_count": 16,
+    "primary_iou_threshold": 0.5,
+    "per_class": {
+      "plane": {
+        "class_id": 0,
+        "class_name": "plane",
+        "gt_count": 2550,
+        "pred_count": 2895,
+        "tp": 2395,
+        "fp": 500,
+        "fn": 155,
+        "precision": 0.8273,
+        "recall": 0.9392,
+        "ap50": 0.9181,
+        "ap50_95": 0.6945
+      },
+      "ship": {
+        "class_id": 1,
+        "class_name": "ship",
+        "gt_count": 10765,
+        "pred_count": 11520,
+        "tp": 9620,
+        "fp": 1900,
+        "fn": 1145,
+        "precision": 0.8351,
+        "recall": 0.8936,
+        "ap50": 0.8734,
+        "ap50_95": 0.6327
+      },
+      "storage-tank": {
+        "class_id": 2,
+        "class_name": "storage-tank",
+        "gt_count": 2940,
+        "pred_count": 2655,
+        "tp": 2224,
+        "fp": 431,
+        "fn": 716,
+        "precision": 0.8377,
+        "recall": 0.7565,
+        "ap50": 0.7344,
+        "ap50_95": 0.4856
+      },
+      "baseball-diamond": {
+        "class_id": 3,
+        "class_name": "baseball-diamond",
+        "gt_count": 213,
+        "pred_count": 319,
+        "tp": 174,
+        "fp": 145,
+        "fn": 39,
+        "precision": 0.5455,
+        "recall": 0.8169,
+        "ap50": 0.72,
+        "ap50_95": 0.4145
+      },
+      "tennis-court": {
+        "class_id": 4,
+        "class_name": "tennis-court",
+        "gt_count": 763,
+        "pred_count": 797,
+        "tp": 688,
+        "fp": 109,
+        "fn": 75,
+        "precision": 0.8632,
+        "recall": 0.9017,
+        "ap50": 0.882,
+        "ap50_95": 0.7266
+      },
+      "basketball-court": {
+        "class_id": 5,
+        "class_name": "basketball-court",
+        "gt_count": 143,
+        "pred_count": 169,
+        "tp": 87,
+        "fp": 82,
+        "fn": 56,
+        "precision": 0.5148,
+        "recall": 0.6084,
+        "ap50": 0.5196,
+        "ap50_95": 0.4193
+      },
+      "ground-track-field": {
+        "class_id": 6,
+        "class_name": "ground-track-field",
+        "gt_count": 145,
+        "pred_count": 318,
+        "tp": 115,
+        "fp": 203,
+        "fn": 30,
+        "precision": 0.3616,
+        "recall": 0.7931,
+        "ap50": 0.5733,
+        "ap50_95": 0.3281
+      },
+      "harbor": {
+        "class_id": 7,
+        "class_name": "harbor",
+        "gt_count": 2102,
+        "pred_count": 2702,
+        "tp": 1803,
+        "fp": 899,
+        "fn": 299,
+        "precision": 0.6673,
+        "recall": 0.8578,
+        "ap50": 0.7558,
+        "ap50_95": 0.4268
+      },
+      "bridge": {
+        "class_id": 8,
+        "class_name": "bridge",
+        "gt_count": 466,
+        "pred_count": 745,
+        "tp": 301,
+        "fp": 444,
+        "fn": 165,
+        "precision": 0.404,
+        "recall": 0.6459,
+        "ap50": 0.4782,
+        "ap50_95": 0.2346
+      },
+      "large-vehicle": {
+        "class_id": 9,
+        "class_name": "large-vehicle",
+        "gt_count": 5139,
+        "pred_count": 5828,
+        "tp": 3792,
+        "fp": 2036,
+        "fn": 1347,
+        "precision": 0.6507,
+        "recall": 0.7379,
+        "ap50": 0.6764,
+        "ap50_95": 0.4884
+      },
+      "small-vehicle": {
+        "class_id": 10,
+        "class_name": "small-vehicle",
+        "gt_count": 43337,
+        "pred_count": 56367,
+        "tp": 33798,
+        "fp": 22569,
+        "fn": 9539,
+        "precision": 0.5996,
+        "recall": 0.7799,
+        "ap50": 0.6531,
+        "ap50_95": 0.3383
+      },
+      "helicopter": {
+        "class_id": 11,
+        "class_name": "helicopter",
+        "gt_count": 78,
+        "pred_count": 200,
+        "tp": 56,
+        "fp": 144,
+        "fn": 22,
+        "precision": 0.28,
+        "recall": 0.7179,
+        "ap50": 0.4826,
+        "ap50_95": 0.2584
+      },
+      "roundabout": {
+        "class_id": 12,
+        "class_name": "roundabout",
+        "gt_count": 185,
+        "pred_count": 227,
+        "tp": 139,
+        "fp": 88,
+        "fn": 46,
+        "precision": 0.6123,
+        "recall": 0.7514,
+        "ap50": 0.663,
+        "ap50_95": 0.4088
+      },
+      "soccer-ball-field": {
+        "class_id": 13,
+        "class_name": "soccer-ball-field",
+        "gt_count": 149,
+        "pred_count": 296,
+        "tp": 100,
+        "fp": 196,
+        "fn": 49,
+        "precision": 0.3378,
+        "recall": 0.6711,
+        "ap50": 0.4471,
+        "ap50_95": 0.2744
+      },
+      "swimming-pool": {
+        "class_id": 14,
+        "class_name": "swimming-pool",
+        "gt_count": 576,
+        "pred_count": 596,
+        "tp": 390,
+        "fp": 206,
+        "fn": 186,
+        "precision": 0.6544,
+        "recall": 0.6771,
+        "ap50": 0.6062,
+        "ap50_95": 0.2837
+      },
+      "container-crane": {
+        "class_id": 15,
+        "class_name": "container-crane",
+        "gt_count": 14,
+        "pred_count": 16,
+        "tp": 1,
+        "fp": 15,
+        "fn": 13,
+        "precision": 0.0625,
+        "recall": 0.0714,
+        "ap50": 0.0094,
+        "ap50_95": 0.0019
+      }
+    }
+  },
+  "benchmarks": {},
+  "memory_leak_audit": {
+    "delta_rss_mb": 92.18,
+    "threshold_mb": 50.0,
+    "status": "FAIL"
+  }
+}

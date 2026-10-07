@@ -268,6 +268,45 @@ void test_640_canonical_scaling()
     CHECK_NEAR(g.h, 48.0f, 0.0001f, "640px tile strictly 1.0 scaled height");
 }
 
+// ---------------------------------------------------------------------------
+// 8. Test: Containment / IoS Suppression (nested duplicate fragment filtered)
+// ---------------------------------------------------------------------------
+void test_containment_ios_suppression()
+{
+    std::printf("--- Running test_containment_ios_suppression ---\n");
+
+    // Box1 (100, 100, 150, 150) and Box2 (110, 110, 50, 50) of the same class
+    // Box2 is fully inscribed in Box1, but IoU < 0.25 (IoU = 1/9 ≈ 0.1111)
+    GlobalDetection box1{
+        .x = 100.0f, .y = 100.0f, .w = 150.0f, .h = 150.0f, .conf = 0.85f, .class_id = 0, .tile_id = 0};
+    GlobalDetection box2{
+        .x = 110.0f, .y = 110.0f, .w = 50.0f, .h = 50.0f, .conf = 0.92f, .class_id = 0, .tile_id = 1};
+
+    float iou = calculate_iou(box1, box2);
+    CHECK(iou < 0.25f, "IoU between Box1 and Box2 must be < 0.25");
+
+    float ios = calculate_containment(box1, box2);
+    CHECK(ios >= 0.88f, "Containment / IoS between Box1 and Box2 must be >= 0.88");
+
+    // Run Cluster-DIoU-NMS
+    std::vector<GlobalDetection> input = {box1, box2};
+    std::vector<TileRect> empty_tiles;
+    auto result = cluster_diou_nms(input, empty_tiles, /*diou_threshold=*/0.5f);
+
+    // Verify exactly 1 box (Box1) is returned
+    CHECK(result.size() == 1, "Exactly 1 box must be returned after containment suppression");
+    if (result.size() == 1)
+    {
+        const auto &res = result[0];
+        CHECK_NEAR(res.x, 100.0f, 0.01f, "Result box X matches Box1");
+        CHECK_NEAR(res.y, 100.0f, 0.01f, "Result box Y matches Box1");
+        CHECK_NEAR(res.w, 150.0f, 0.01f, "Result box W matches Box1");
+        CHECK_NEAR(res.h, 150.0f, 0.01f, "Result box H matches Box1");
+        CHECK(res.class_id == 0, "Result class_id matches");
+        CHECK_NEAR(res.conf, 0.92f, 0.001f, "Result confidence absorbs higher score from nested box");
+    }
+}
+
 int main()
 {
     test_seam_detection_merging();
@@ -277,6 +316,7 @@ int main()
     test_json_formatting();
     test_736_remap_scaling();
     test_640_canonical_scaling();
+    test_containment_ios_suppression();
 
     if (g_failures == 0)
     {

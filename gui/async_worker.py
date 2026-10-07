@@ -94,24 +94,30 @@ def py_calculate_tiling_params(
     if tile_size == 640 and is_ultra_large:
         tile_size = effective_slice_size
 
-    # Overlap clamped [0.1, 0.4]
-    overlap = max(0.1, min(0.4, 0.1 + (altitude / 500.0)))
+    # Overlap clamped to [0.15, 0.20]
+    overlap = max(0.15, min(0.20, 0.15 + (altitude / 3000.0)))
     step_x = max(1, int(round(tile_size * (1.0 - overlap))))
     step_y = step_x
 
-    cols = (width + step_x - 1) // step_x
-    rows = (height + step_y - 1) // step_y
+    cols = 1 if width <= tile_size else max(1, int(math.ceil((width - tile_size) / step_x)) + 1)
+    rows = 1 if height <= tile_size else max(1, int(math.ceil((height - tile_size) / step_y)) + 1)
+
+    # Safeguard against excessive tiling on medium frames (max(W, H) <= 1500px)
+    if max(width, height) <= 1500:
+        cols = min(cols, 3)
+        rows = min(rows, 3)
+        if cols * rows > 6:
+            if width <= height:
+                cols = 2
+            else:
+                rows = 2
 
     tiles: List[Rect] = []
     for r in range(rows):
-        y = r * step_y
-        if y >= height:
-            break
+        y = 0 if rows <= 1 else max(0, min(height - tile_size, int(round(r * (height - tile_size) / (rows - 1)))))
         h = min(tile_size, height - y)
         for c in range(cols):
-            x = c * step_x
-            if x >= width:
-                break
+            x = 0 if cols <= 1 else max(0, min(width - tile_size, int(round(c * (width - tile_size) / (cols - 1)))))
             w = min(tile_size, width - x)
             tiles.append(Rect(x=x, y=y, w=w, h=h))
 
@@ -155,6 +161,25 @@ def py_calculate_diou(a: GlobalDet, b: GlobalDet) -> float:
     return iou - (d2 / c2)
 
 
+def py_calculate_containment(a: GlobalDet, b: GlobalDet) -> float:
+    """Calculate containment ratio (Intersection over Smaller / IoS) between two detections."""
+    x1 = max(a.x, b.x)
+    y1 = max(a.y, b.y)
+    x2 = min(a.x + a.w, b.x + b.w)
+    y2 = min(a.y + a.h, b.y + b.h)
+
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter_area = inter_w * inter_h
+
+    area_a = a.w * a.h
+    area_b = b.w * b.h
+    min_area = min(area_a, area_b)
+    if min_area <= 1e-7:
+        return 0.0
+    return inter_area / min_area
+
+
 def py_cluster_diou_nms(
     detections: List[GlobalDet],
     tiles: List[Any],
@@ -179,6 +204,45 @@ def py_cluster_diou_nms(
 
     for cls in classes:
         cls_boxes = [d for d in candidates if d.class_id == cls]
+
+        # --- Containment / IoS Suppression (Intersection over Smaller >= 0.88) ---
+        num_cls = len(cls_boxes)
+        if num_cls > 1:
+            ios_suppressed = [False] * num_cls
+            for i in range(num_cls):
+                if ios_suppressed[i]:
+                    continue
+                area_i = cls_boxes[i].w * cls_boxes[i].h
+                if area_i <= 1e-7:
+                    ios_suppressed[i] = True
+                    continue
+
+                for j in range(i + 1, num_cls):
+                    if ios_suppressed[j]:
+                        continue
+                    area_j = cls_boxes[j].w * cls_boxes[j].h
+                    if area_j <= 1e-7:
+                        ios_suppressed[j] = True
+                        continue
+
+                    containment = py_calculate_containment(cls_boxes[i], cls_boxes[j])
+                    min_area = min(area_i, area_j)
+                    max_area = max(area_i, area_j)
+
+                    # A box is considered a nested edge fragment if it is contained within the larger box
+                    # (containment >= 0.88) and has a substantially smaller area (min_area <= 0.80 * max_area).
+                    # Comparable full detections across tile seams are preserved for DIoU weighted coordinate averaging.
+                    if containment >= 0.88 and min_area <= 0.80 * max_area:
+                        if area_i < area_j:
+                            cls_boxes[j].conf = max(cls_boxes[j].conf, cls_boxes[i].conf)
+                            ios_suppressed[i] = True
+                            break
+                        else:
+                            cls_boxes[i].conf = max(cls_boxes[i].conf, cls_boxes[j].conf)
+                            ios_suppressed[j] = True
+
+            cls_boxes = [cls_boxes[k] for k in range(num_cls) if not ios_suppressed[k]]
+
         cls_boxes.sort(key=lambda x: x.conf, reverse=True)
 
         n = len(cls_boxes)
@@ -242,7 +306,18 @@ def py_cluster_diou_nms(
             c2 = (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2
 
             diou = np.where(c2 > 1e-7, iou - (d2 / c2), iou)
-            to_suppress = sub_idx[diou >= diou_threshold]
+
+            # Adaptive threshold for seam candidates originating from different tiles
+            curr_tile = cls_boxes[i].tile_id
+            sub_tiles = np.array([cls_boxes[k].tile_id for k in sub_idx], dtype=np.int32)
+            diff_tiles = (curr_tile >= 0) & (sub_tiles >= 0) & (sub_tiles != curr_tile)
+            if np.any(diff_tiles):
+                ratio = np.clip(np.where(c2 > 1e-7, d2 / c2, 1.0), 0.0, 1.0)
+                eff_thresh = np.where(diff_tiles, diou_threshold * (0.70 + 0.30 * ratio), diou_threshold)
+            else:
+                eff_thresh = diou_threshold
+
+            to_suppress = sub_idx[diou >= eff_thresh]
             if to_suppress.size > 0:
                 suppressed[to_suppress] = True
 
@@ -280,6 +355,7 @@ class InferenceWorker(QThread):
         detector: Optional[UnifiedDetector] = None,
         is_mock: bool = False,
         parent: Optional[QObject] = None,
+        class_names: Optional[Dict[int, str]] = None,
     ) -> None:
         super().__init__(parent)
         self.image_source = image_source
@@ -289,8 +365,20 @@ class InferenceWorker(QThread):
         self.diou_threshold = float(diou_threshold)
         self.detector = detector
         self.is_mock = is_mock
+        self.class_names = dict(class_names) if class_names else None
 
         self._is_cancelled: bool = False
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Retrieve active class ID to name dictionary with fallback."""
+        if self.class_names:
+            return dict(self.class_names)
+        if self.detector is not None and hasattr(self.detector, "get_class_names"):
+            try:
+                return self.detector.get_class_names()
+            except Exception:
+                pass
+        return dict(DEFAULT_CLASS_NAMES)
 
     def cancel(self) -> None:
         """Request thread cancellation."""
@@ -299,26 +387,6 @@ class InferenceWorker(QThread):
 
     def is_cancelled(self) -> bool:
         return self._is_cancelled
-
-    def _format_results_for_gui(self, detections: list) -> list:
-        """Format detection results (list of objects or dictionaries)
-        into a standardized format for CanvasViewer and target table.
-        """
-        formatted = []
-        for det in detections:
-            if isinstance(det, dict):
-                formatted.append(det)
-            elif hasattr(det, "to_dict"):
-                formatted.append(det.to_dict())
-            elif isinstance(det, (list, tuple)) and len(det) >= 6:
-                # Format: [x1, y1, x2, y2, conf, class_id]
-                x1, y1, x2, y2, conf, cls_id = det[:6]
-                formatted.append({
-                    "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-                    "confidence": float(conf),
-                    "class_id": int(cls_id)
-                })
-        return formatted
 
     def run(self) -> None:
         """Execute image loading, tiling, inference, offset remapping, and NMS."""
@@ -568,7 +636,7 @@ class InferenceWorker(QThread):
 
     def _format_results_for_gui(self, detections: List[Any]) -> List[Dict[str, Any]]:
         """Convert global detection objects to clean dictionary representations."""
-        return format_detections_for_gui(detections)
+        return format_detections_for_gui(detections, class_names=self.get_class_names())
 
 
 def calculate_tiles_for_image(
@@ -670,13 +738,17 @@ def merge_boundary_detections(
     )
 
 
-def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
+def format_detections_for_gui(
+    detections: List[Any],
+    class_names: Optional[Dict[int, str]] = None,
+) -> List[Dict[str, Any]]:
     """Convert global detection objects to clean dictionary representations."""
+    active_names = class_names if class_names is not None else DEFAULT_CLASS_NAMES
     results: List[Dict[str, Any]] = []
     for i, det in enumerate(detections):
         if isinstance(det, dict):
             class_id = int(det.get("class_id", 0))
-            class_name = str(det.get("class_name", DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")))
+            class_name = str(det.get("class_name", active_names.get(class_id, f"Клас {class_id}")))
             conf = float(det.get("confidence", det.get("conf", 0.0)))
             if "bbox" in det and isinstance(det["bbox"], (list, tuple)) and len(det["bbox"]) == 4:
                 x = round(float(det["bbox"][0]), 2)
@@ -688,9 +760,27 @@ def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
                 y = round(float(det.get("y", 0.0)), 2)
                 w = round(float(det.get("w", 0.0)), 2)
                 h = round(float(det.get("h", 0.0)), 2)
+        elif hasattr(det, "to_dict"):
+            d_dict = det.to_dict()
+            class_id = int(d_dict.get("class_id", 0))
+            class_name = str(d_dict.get("class_name", active_names.get(class_id, f"Клас {class_id}")))
+            conf = float(d_dict.get("confidence", d_dict.get("conf", 0.0)))
+            x = round(float(d_dict.get("x", 0.0)), 2)
+            y = round(float(d_dict.get("y", 0.0)), 2)
+            w = round(float(d_dict.get("w", 0.0)), 2)
+            h = round(float(d_dict.get("h", 0.0)), 2)
+        elif isinstance(det, (list, tuple)) and len(det) >= 6:
+            x1, y1, x2, y2, conf_val, cls_id = det[:6]
+            class_id = int(cls_id)
+            class_name = active_names.get(class_id, f"Клас {class_id}")
+            x = round(float(x1), 2)
+            y = round(float(y1), 2)
+            w = round(float(x2 - x1), 2)
+            h = round(float(y2 - y1), 2)
+            conf = float(conf_val)
         else:
             class_id = int(det.class_id)
-            class_name = DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")
+            class_name = active_names.get(class_id, f"Клас {class_id}")
             x = round(float(det.x), 2)
             y = round(float(det.y), 2)
             w = round(float(det.w), 2)
@@ -724,6 +814,7 @@ def run_tiled_inference(
     is_mock: bool = False,
     is_cancelled_fn: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    class_names: Optional[Dict[int, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Execute complete tiled detection pipeline on an image buffer."""
     img_h, img_w = img_rgb.shape[:2]
@@ -790,7 +881,13 @@ def run_tiled_inference(
     merged_detections = merge_boundary_detections(
         all_global_detections, tiles, diou_threshold=diou_threshold, conf_threshold=conf_threshold
     )
-    return format_detections_for_gui(merged_detections)
+    cnames = class_names
+    if cnames is None and detector is not None and hasattr(detector, "get_class_names"):
+        try:
+            cnames = detector.get_class_names()
+        except Exception:
+            pass
+    return format_detections_for_gui(merged_detections, class_names=cnames)
 
 
 # Re-export BatchTriageWorker for convenience

@@ -99,6 +99,13 @@ float calculate_iou(const GlobalDetection &a, const GlobalDetection &b);
 float calculate_diou(const GlobalDetection &a, const GlobalDetection &b);
 
 /**
+ * @brief Calculate containment ratio (Intersection over Smaller / IoS) between two global detections.
+ *
+ * IoS = intersection_area / min(area_a, area_b)
+ */
+float calculate_containment(const GlobalDetection &a, const GlobalDetection &b);
+
+/**
  * @brief Cluster-DIoU-NMS: clusters and merges duplicate bounding boxes at tile overlap boundaries.
  *
  * When duplicate detections of the same object occur across overlapping tile seams, they are merged

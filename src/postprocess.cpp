@@ -229,6 +229,29 @@ float calculate_diou(const GlobalDetection &a, const GlobalDetection &b)
     return iou - (d2 / c2);
 }
 
+float calculate_containment(const GlobalDetection &a, const GlobalDetection &b)
+{
+    float x1 = std::max(a.x, b.x);
+    float y1 = std::max(a.y, b.y);
+    float x2 = std::min(a.x + a.w, b.x + b.w);
+    float y2 = std::min(a.y + a.h, b.y + b.h);
+
+    float inter_w = std::max(0.0f, x2 - x1);
+    float inter_h = std::max(0.0f, y2 - y1);
+    float inter_area = inter_w * inter_h;
+
+    float area_a = a.w * a.h;
+    float area_b = b.w * b.h;
+    float min_area = std::min(area_a, area_b);
+
+    if (min_area <= 1e-7f)
+    {
+        return 0.0f;
+    }
+
+    return inter_area / min_area;
+}
+
 std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection> &detections,
                                               const std::vector<TileRect> &tiles,
                                               float diou_threshold,
@@ -279,6 +302,75 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
             {
                 cls_boxes.push_back(d);
             }
+        }
+
+        // --- Containment / IoS Suppression (Intersection over Smaller >= 0.88f) ---
+        // Suppresses nested/fragment boundary duplicates of the same object.
+        const size_t n_cls = cls_boxes.size();
+        if (n_cls > 1)
+        {
+            std::vector<uint8_t> ios_suppressed(n_cls, 0);
+
+            for (size_t i = 0; i < n_cls; ++i)
+            {
+                if (ios_suppressed[i])
+                    continue;
+
+                const float area_i = cls_boxes[i].w * cls_boxes[i].h;
+                if (area_i <= 1e-7f)
+                {
+                    ios_suppressed[i] = 1;
+                    continue;
+                }
+
+                for (size_t j = i + 1; j < n_cls; ++j)
+                {
+                    if (ios_suppressed[j])
+                        continue;
+
+                    const float area_j = cls_boxes[j].w * cls_boxes[j].h;
+                    if (area_j <= 1e-7f)
+                    {
+                        ios_suppressed[j] = 1;
+                        continue;
+                    }
+
+                    const float containment = calculate_containment(cls_boxes[i], cls_boxes[j]);
+                    const float min_area = std::min(area_i, area_j);
+                    const float max_area = std::max(area_i, area_j);
+
+                    // A box is considered a nested edge fragment if it is contained within the larger box
+                    // (containment >= 0.88f) and has a substantially smaller area (min_area <= 0.80f * max_area).
+                    // Comparable full detections across tile seams are preserved for DIoU weighted coordinate averaging.
+                    if (containment >= 0.88f && min_area <= 0.80f * max_area)
+                    {
+                        if (area_i < area_j)
+                        {
+                            // Box i is smaller -> suppress i, larger box j absorbs confidence
+                            cls_boxes[j].conf = std::max(cls_boxes[j].conf, cls_boxes[i].conf);
+                            ios_suppressed[i] = 1;
+                            break; // i is suppressed, continue to next i
+                        }
+                        else
+                        {
+                            // Box j is smaller -> suppress j, larger box i absorbs confidence
+                            cls_boxes[i].conf = std::max(cls_boxes[i].conf, cls_boxes[j].conf);
+                            ios_suppressed[j] = 1;
+                        }
+                    }
+                }
+            }
+
+            std::vector<GlobalDetection> active_boxes;
+            active_boxes.reserve(n_cls);
+            for (size_t k = 0; k < n_cls; ++k)
+            {
+                if (!ios_suppressed[k])
+                {
+                    active_boxes.push_back(cls_boxes[k]);
+                }
+            }
+            cls_boxes = std::move(active_boxes);
         }
 
         // Sort descending by confidence
@@ -363,7 +455,31 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
                     }
 
                     float diou = calculate_diou(bi, bj);
-                    if (diou >= diou_threshold)
+
+                    // Adaptive threshold for seam objects based on center distance
+                    float eff_thresh = diou_threshold;
+                    if (bi.tile_id >= 0 && bj.tile_id >= 0 && bi.tile_id != bj.tile_id)
+                    {
+                        const float c_ax = bi.x + bi.w * 0.5f;
+                        const float c_ay = bi.y + bi.h * 0.5f;
+                        const float c_bx = bj.x + bj.w * 0.5f;
+                        const float c_by = bj.y + bj.h * 0.5f;
+                        const float d2 = (c_ax - c_bx) * (c_ax - c_bx) + (c_ay - c_by) * (c_ay - c_by);
+
+                        const float enc_x1 = std::min(bi.x, bj.x);
+                        const float enc_y1 = std::min(bi.y, bj.y);
+                        const float enc_x2 = std::max(bi.x + bi.w, bj.x + bj.w);
+                        const float enc_y2 = std::max(bi.y + bi.h, bj.y + bj.h);
+                        const float c2 = (enc_x2 - enc_x1) * (enc_x2 - enc_x1) + (enc_y2 - enc_y1) * (enc_y2 - enc_y1);
+
+                        if (c2 > 1e-7f)
+                        {
+                            const float ratio = std::min(1.0f, d2 / c2);
+                            eff_thresh = diou_threshold * (0.70f + 0.30f * ratio);
+                        }
+                    }
+
+                    if (diou >= eff_thresh)
                     {
                         adj[i].push_back(j);
                         adj[j].push_back(i);

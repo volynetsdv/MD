@@ -274,7 +274,7 @@ class TestMainWindowHeadless:
 
         # Buttons and controls
         assert win.btn_open is not None
-        assert win.btn_load_mock_8k is not None
+        assert win.btn_open_folder is not None
         assert win.btn_detect is not None
         assert win.btn_detect.isEnabled() is False  # disabled until image loaded
 
@@ -355,3 +355,48 @@ class TestMainWindowHeadless:
 
         assert win.lbl_conf_val.text() == "60%"
         assert win.canvas._min_confidence == 0.60
+
+    def test_file_dialog_dark_tactical_integration(self, qapp):
+        """Verify QFileDialog dark theme rules are present and QFileDialog uses non-native dialog."""
+        from gui.styles import DARK_TACTICAL_STYLE
+
+        # Verify dark tactical styling rules
+        assert "QFileDialog" in DARK_TACTICAL_STYLE
+        assert "QFileDialog QTreeView" in DARK_TACTICAL_STYLE
+        assert "QFileDialog QPushButton" in DARK_TACTICAL_STYLE
+        assert "#0b1326" in DARK_TACTICAL_STYLE
+        assert "#080f1e" in DARK_TACTICAL_STYLE
+
+    def test_deprecated_test_8k_removed_and_clean_button_icons(self, qapp):
+        """Verify 8K test button is removed and all panel buttons use valid QIcons without broken glyphs."""
+        win = MainWindow()
+
+        # Verify deprecated test 8k button is absent from left panel
+        assert not hasattr(win, "btn_test_8k") or win.btn_test_8k is None
+        assert not hasattr(win, "btn_load_mock_8k") or win.btn_load_mock_8k is None
+
+        # Verify File menu does not contain 8K test action
+        menu_bar = win.menuBar()
+        file_menu_actions = [a.text() for a in menu_bar.actions()[0].menu().actions()]
+        assert not any("8K" in a for a in file_menu_actions)
+
+        # Verify buttons have valid QIcons
+        assert not win.btn_open.icon().isNull()
+        assert not win.btn_open_folder.icon().isNull()
+        assert not win.btn_batch_triage.icon().isNull()
+        assert not win.btn_toggle_analysis.icon().isNull()
+        assert not win.btn_cancel.icon().isNull()
+
+        # Verify button text has no missing emoji glyphs
+        for btn in [
+            win.btn_open,
+            win.btn_open_folder,
+            win.btn_batch_triage,
+            win.btn_toggle_analysis,
+            win.btn_cancel,
+        ]:
+            text = btn.text()
+            assert not any(ord(c) > 0x2000 and not (0x0400 <= ord(c) <= 0x04FF) for c in text), (
+                f"Button text '{text}' contains unrendered emoji glyphs"
+            )
+

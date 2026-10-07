@@ -28,7 +28,7 @@ from gui.async_worker import (
     InferenceWorker,
     run_tiled_inference,
 )
-from src.detector_dispatcher import UnifiedDetector
+from src.detector_dispatcher import DEFAULT_CLASS_NAMES, UnifiedDetector
 
 logger = logging.getLogger("BatchTriageWorker")
 
@@ -47,7 +47,7 @@ class BatchTriageWorker(QThread):
         output_folder: Optional[Union[str, Path]] = None,
         altitude: float = 150.0,
         vram_mb: int = 2048,
-        conf_threshold: float = 0.20,
+        conf_threshold: float = 0.25,
         diou_threshold: float = 0.45,
         detector: Optional[Any] = None,
         use_cache: bool = True,
@@ -55,6 +55,7 @@ class BatchTriageWorker(QThread):
         input_dir: Optional[Union[str, Path]] = None,
         output_dir: Optional[Union[str, Path]] = None,
         conf_thresh: Optional[float] = None,
+        class_names: Optional[Dict[int, str]] = None,
     ) -> None:
         super().__init__(parent)
         in_dir = input_dir if input_dir is not None else input_folder
@@ -77,7 +78,19 @@ class BatchTriageWorker(QThread):
         self.diou_threshold = float(diou_threshold)
         self.detector = detector
         self.use_cache = bool(use_cache)
+        self.class_names = dict(class_names) if class_names else None
         self._is_cancelled: bool = False
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Retrieve active class ID to name dictionary with fallback."""
+        if self.class_names:
+            return dict(self.class_names)
+        if self.detector is not None and hasattr(self.detector, "get_class_names"):
+            try:
+                return self.detector.get_class_names()
+            except Exception:
+                pass
+        return dict(DEFAULT_CLASS_NAMES)
 
     def cancel(self) -> None:
         """Signal thread to cancel batch processing gracefully."""
@@ -210,21 +223,30 @@ class BatchTriageWorker(QThread):
         self, img_path: Path, img_rgb: np.ndarray, detector: Any
     ) -> List[Dict[str, Any]]:
         """Run detection using custom mock detector or standard tiled UnifiedDetector."""
+        cnames = self.get_class_names()
+        dets: List[Dict[str, Any]] = []
         if callable(detector):
-            return detector(img_rgb)
-        if hasattr(detector, "detect_image"):
-            return detector.detect_image(img_rgb)
-        if hasattr(detector, "predict"):
+            res = detector(img_rgb)
+            dets = res if isinstance(res, list) else []
+        elif hasattr(detector, "detect_image"):
+            res = detector.detect_image(img_rgb)
+            dets = res if isinstance(res, list) else []
+        elif hasattr(detector, "predict"):
             res = detector.predict(img_rgb)
-            if isinstance(res, list):
-                return res
-        if hasattr(detector, "predict_tile"):
-            return run_tiled_inference(
+            dets = res if isinstance(res, list) else []
+        elif hasattr(detector, "predict_tile"):
+            dets = run_tiled_inference(
                 img_rgb=img_rgb,
                 altitude=self.altitude,
                 vram_mb=self.vram_mb,
                 conf_threshold=self.conf_threshold,
                 diou_threshold=self.diou_threshold,
                 detector=detector,
+                class_names=cnames,
             )
-        return []
+
+        for d in dets:
+            if isinstance(d, dict) and "class_id" in d and "class_name" not in d:
+                cid = int(d["class_id"])
+                d["class_name"] = cnames.get(cid, f"Class {cid}")
+        return dets

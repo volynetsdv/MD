@@ -168,18 +168,26 @@ class SettingsDialog(QDialog):
         main_layout.addLayout(btn_layout)
 
     def _browse_models_dir(self) -> None:
-        p = QFileDialog.getExistingDirectory(
-            self, "Обрати каталог моделей", self.txt_models_dir.text()
-        )
-        if p:
-            self.txt_models_dir.setText(p)
+        dialog = QFileDialog(self, "Обрати каталог моделей", self.txt_models_dir.text())
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(DARK_TACTICAL_STYLE)
+        if dialog.exec():
+            selected = dialog.selectedFiles()
+            if selected:
+                self.txt_models_dir.setText(selected[0])
 
     def _browse_recent_dir(self) -> None:
-        p = QFileDialog.getExistingDirectory(
-            self, "Обрати робочу папку знімків", self.txt_recent_dir.text()
-        )
-        if p:
-            self.txt_recent_dir.setText(p)
+        dialog = QFileDialog(self, "Обрати робочу папку знімків", self.txt_recent_dir.text())
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(DARK_TACTICAL_STYLE)
+        if dialog.exec():
+            selected = dialog.selectedFiles()
+            if selected:
+                self.txt_recent_dir.setText(selected[0])
 
     def _download_models(self) -> None:
         """Download missing or updated weights from configured URLs."""
