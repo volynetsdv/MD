@@ -98,7 +98,7 @@ jobs:
           cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --parallel
 
-      # ================= TESTING =================
+      # ================= TESTING (Виконується для всіх гілок і PR) =================
       - name: Run C++ Unit Tests (CTest)
         run: |
           ctest --test-dir build -C Release --output-on-failure
@@ -115,24 +115,24 @@ jobs:
         run: |
           python validate_system.py
 
-      # ================= PACKAGING =================
+      # ================= PACKAGING (Тільки для master, development або tag) =================
       - name: "[Linux] Build Standalone Release Bundle & Archive"
-        if: runner.os == 'Linux' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+        if: runner.os == 'Linux' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           python build_release.py --skip-cpp --clean
           tar -czf dist/${{ matrix.archive_name }} -C dist AerialWorkstation
 
       - name: "[Windows] Build Standalone Release Bundle & Archive"
-        if: runner.os == 'Windows' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+        if: runner.os == 'Windows' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development' || startsWith(github.ref, 'refs/tags/v'))
         shell: pwsh
         run: |
           python build_release.py --skip-cpp --clean
           Compress-Archive -Path dist/AerialWorkstation -DestinationPath dist/${{ matrix.archive_name }} -Force
 
-      # ================= UPLOAD ARTIFACTS =================
+      # ================= UPLOAD ARTIFACTS (Тільки для master, development або tag) =================
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
-        if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+        if: success() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development' || startsWith(github.ref, 'refs/tags/v'))
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -141,10 +141,11 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # ================= RELEASE (Тільки для master або tag) =================
   release:
     name: Create GitHub Release
     needs: test-and-build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -160,5 +161,6 @@ jobs:
           files: |
             release_assets/**/*.tar.gz
             release_assets/**/*.zip
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('release-{0}', github.sha) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
