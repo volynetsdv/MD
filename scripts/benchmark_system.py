@@ -63,6 +63,11 @@ from src.detector_dispatcher import (
     calculate_safe_batch_size,
 )
 
+try:
+    import pytiling_core
+except ImportError:
+    pytiling_core = None
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("BenchmarkSystem")
 
@@ -794,7 +799,7 @@ def process_single_frame_instrumented(
     diou_thresh: float = 0.50,
     output_detected_dir: Optional[Path] = None,
     is_turbo: bool = False,
-    turbo_max_cap: int = 4,
+    turbo_max_cap: int = 8,
 ) -> Tuple[Dict[str, float], List[Dict[str, Any]], int, int, int, int]:
     """Execute end-to-end detection pipeline measuring per-stage microsecond latencies.
 
@@ -805,16 +810,14 @@ def process_single_frame_instrumented(
     sync_gpu()
     t_start = time.perf_counter()
 
-    # Stage 1: T_read (Disk I/O & BGR->RGB conversion)
+    # Stage 1: T_read (Disk I/O)
     t0_read = time.perf_counter()
     bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if bgr is None:
         raise ValueError(f"Failed to read image from {image_path}")
-    img_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    del bgr
     t_read = (time.perf_counter() - t0_read) * 1000.0
 
-    img_h, img_w = img_rgb.shape[:2]
+    img_h, img_w = bgr.shape[:2]
 
     # Stage 2: T_tiling (Dynamic slice calculation)
     t0_tiling = time.perf_counter()
@@ -824,36 +827,106 @@ def process_single_frame_instrumented(
     total_tiles = len(tiles)
     model_size = 640 if tile_size == 736 else tile_size
 
-    # Stage 3: T_slice (Zero-copy memory views & bilinear resizing for 736px tiles)
-    t0_slice = time.perf_counter()
-    slices = []
-    for tile in tiles:
-        tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
-        tslice = img_rgb[ty : ty + th, tx : tx + tw]
-        if tw == 736 and th == 736:
-            tslice = cv2.resize(tslice, (640, 640), interpolation=cv2.INTER_LINEAR)
-        slices.append(tslice)
-    t_slice = (time.perf_counter() - t0_slice) * 1000.0
-
-    del img_rgb
-
-    # Stage 4: T_infer (Model forward pass across all tiles with dynamic batching)
     batch_size = calculate_safe_batch_size(
         target_tile_size=model_size,
         is_turbo=is_turbo,
         max_cap=turbo_max_cap,
     )
-    all_tile_dets = []
-    sync_gpu()
-    t0_infer = time.perf_counter()
-    for i in range(0, len(slices), batch_size):
-        chunk = slices[i : i + batch_size]
-        tdets_batch = detector.predict_batch(chunk, tile_size=model_size, conf_threshold=conf_thresh)
-        all_tile_dets.extend(tdets_batch)
-    sync_gpu()
-    t_infer = (time.perf_counter() - t0_infer) * 1000.0
 
-    del slices
+    try:
+        import torch
+        cuda_avail = torch.cuda.is_available()
+    except Exception:
+        torch = None
+        cuda_avail = False
+
+    can_use_cuda_slicer = (
+        pytiling_core is not None
+        and getattr(pytiling_core, "HAVE_CUDA", False)
+        and cuda_avail
+        and detector.is_gpu_accelerated
+    )
+
+    if can_use_cuda_slicer:
+        # Stage 3: T_slice (Zero-copy in-VRAM upload and asynchronous slicing)
+        t0_slice = time.perf_counter()
+        d_img = torch.as_tensor(bgr, device="cuda")
+        t_slice = (time.perf_counter() - t0_slice) * 1000.0
+        del bgr
+
+        # Stage 4: T_infer (Double-buffered pipelined slicing & inference)
+        chunks = [tiles[i : i + batch_size] for i in range(0, len(tiles), batch_size)]
+        stream_prep = torch.cuda.Stream()
+        stream_compute = torch.cuda.Stream()
+        buf_inputs = [
+            torch.empty((batch_size, 3, model_size, model_size), dtype=torch.float32, device="cuda")
+            for _ in range(2)
+        ]
+
+        all_tile_dets = []
+        sync_gpu()
+        t0_infer = time.perf_counter()
+
+        if chunks:
+            # Pre-slice chunk 0 on prep stream
+            c0 = chunks[0]
+            b0 = buf_inputs[0][: len(c0)]
+            pytiling_core.extract_batch_tiles_gpu(
+                d_img.data_ptr(), img_w * 3, img_w, img_h,
+                c0, model_size, b0.data_ptr(), True, stream_prep.cuda_stream
+            )
+            stream_prep.synchronize()
+
+        for k in range(len(chunks)):
+            curr_chunk = chunks[k]
+            curr_buf = buf_inputs[k % 2][: len(curr_chunk)]
+
+            # Slicing next chunk concurrently on prep stream
+            if k + 1 < len(chunks):
+                next_chunk = chunks[k + 1]
+                next_buf = buf_inputs[(k + 1) % 2][: len(next_chunk)]
+                pytiling_core.extract_batch_tiles_gpu(
+                    d_img.data_ptr(), img_w * 3, img_w, img_h,
+                    next_chunk, model_size, next_buf.data_ptr(), True, stream_prep.cuda_stream
+                )
+
+            # Infer current chunk on compute stream
+            tdets_batch = detector.predict_batch(
+                curr_buf, tile_size=model_size, conf_threshold=conf_thresh
+            )
+            all_tile_dets.extend(tdets_batch)
+
+            if k + 1 < len(chunks):
+                stream_prep.synchronize()
+
+        sync_gpu()
+        t_infer = (time.perf_counter() - t0_infer) * 1000.0
+        del d_img, buf_inputs
+    else:
+        # Fallback CPU slicing
+        img_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        del bgr
+        t0_slice = time.perf_counter()
+        slices = []
+        for tile in tiles:
+            tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
+            tslice = img_rgb[ty : ty + th, tx : tx + tw]
+            if tw == 736 and th == 736:
+                tslice = cv2.resize(tslice, (640, 640), interpolation=cv2.INTER_LINEAR)
+            slices.append(tslice)
+        t_slice = (time.perf_counter() - t0_slice) * 1000.0
+        del img_rgb
+
+        all_tile_dets = []
+        sync_gpu()
+        t0_infer = time.perf_counter()
+        for i in range(0, len(slices), batch_size):
+            chunk = slices[i : i + batch_size]
+            tdets_batch = detector.predict_batch(chunk, tile_size=model_size, conf_threshold=conf_thresh)
+            all_tile_dets.extend(tdets_batch)
+        sync_gpu()
+        t_infer = (time.perf_counter() - t0_infer) * 1000.0
+        del slices
 
     # Stage 5: T_remap (Global coordinate projection)
     t0_remap = time.perf_counter()
@@ -914,7 +987,7 @@ def run_instrumented_frame_pipeline(
     conf_thresh: float = 0.20,
     diou_thresh: float = 0.50,
     is_turbo: bool = False,
-    turbo_max_cap: int = 4,
+    turbo_max_cap: int = 8,
 ) -> Tuple[Dict[str, float], List[Any], int, int, int, int]:
     return process_single_frame_instrumented(
         image_path=image_path,
@@ -1381,7 +1454,7 @@ def run_benchmark_suite(
     gt_labels_dir: Optional[Path] = None,
     iou_eval_threshold: float = 0.50,
     mode: str = "both",
-    turbo_max_cap: int = 4,
+    turbo_max_cap: int = 8,
 ) -> Tuple[Dict[str, Any], str]:
     """Execute comprehensive benchmarking, returning structured dictionary and Markdown text."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2079,8 +2152,8 @@ def main() -> int:
     parser.add_argument(
         "--turbo-max-cap",
         type=int,
-        default=4,
-        help="Maximum batch size cap for Turbo mode (default: 4)",
+        default=8,
+        help="Maximum batch size cap for Turbo mode (default: 8)",
     )
     parser.add_argument(
         "--output-detected-dir",

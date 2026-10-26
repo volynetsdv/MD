@@ -38,7 +38,9 @@ cudaError_t extract_tile_gpu(const uint8_t *d_src_img,
                              int src_h,
                              const TileRect &rect,
                              int model_target_size,
-                             float *d_dst_tensor);
+                             float *d_dst_tensor,
+                             bool bgr_to_rgb = false,
+                             cudaStream_t stream = 0);
 
 /**
  * @brief Extract a batch of B tiles from a GPU-resident BGR image, resize each to model_target_size
@@ -51,4 +53,6 @@ cudaError_t extract_batch_tiles_gpu(const uint8_t *d_src_img,
                                    const TileRect *rects,
                                    int batch_size,
                                    int model_target_size,
-                                   float *d_dst_batch_tensor);
+                                   float *d_dst_batch_tensor,
+                                   bool bgr_to_rgb = false,
+                                   cudaStream_t stream = 0);

@@ -27,6 +27,10 @@
 #include "tiling_math.hpp"
 #include "trt_detector.hpp"
 
+#ifdef HAVE_CUDA
+#include "cuda_slicer.cuh"
+#endif
+
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -316,5 +320,63 @@ str
         },
         py::arg("a"), py::arg("b"),
         "Calculate Intersection over Smaller (IoS / Containment) between two detections.");
+
+#ifdef HAVE_CUDA
+    m.attr("HAVE_CUDA") = true;
+    m.def("extract_batch_tiles_gpu",
+        [](uintptr_t d_src_ptr,
+           int src_stride_bytes,
+           int src_w,
+           int src_h,
+           py::object rects_obj,
+           int model_target_size,
+           uintptr_t d_dst_ptr,
+           bool bgr_to_rgb,
+           uintptr_t stream_ptr) {
+
+            std::vector<TileRect> cuda_rects;
+            for (auto item : rects_obj) {
+                if (py::isinstance<Rect>(item)) {
+                    auto r = item.cast<Rect>();
+                    cuda_rects.push_back({r.x, r.y, r.w, r.h});
+                } else if (py::isinstance<py::sequence>(item)) {
+                    auto seq = item.cast<py::sequence>();
+                    if (seq.size() >= 4) {
+                        cuda_rects.push_back({
+                            seq[0].cast<int>(),
+                            seq[1].cast<int>(),
+                            seq[2].cast<int>(),
+                            seq[3].cast<int>()
+                        });
+                    }
+                }
+            }
+
+            if (cuda_rects.empty()) return 0;
+
+            cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+            const uint8_t* d_src = reinterpret_cast<const uint8_t*>(d_src_ptr);
+            float* d_dst = reinterpret_cast<float*>(d_dst_ptr);
+
+            cudaError_t err = extract_batch_tiles_gpu(
+                d_src, src_stride_bytes, src_w, src_h,
+                cuda_rects.data(), static_cast<int>(cuda_rects.size()),
+                model_target_size, d_dst, bgr_to_rgb, stream
+            );
+            return static_cast<int>(err);
+        },
+        py::arg("d_src_ptr"),
+        py::arg("src_stride_bytes"),
+        py::arg("src_w"),
+        py::arg("src_h"),
+        py::arg("rects"),
+        py::arg("model_target_size"),
+        py::arg("d_dst_ptr"),
+        py::arg("bgr_to_rgb") = false,
+        py::arg("stream_ptr") = 0,
+        "Extract a batch of tiles from GPU image tensor directly into float32 batch tensor [B, 3, S, S]");
+#else
+    m.attr("HAVE_CUDA") = false;
+#endif
 }
 

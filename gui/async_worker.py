@@ -358,7 +358,7 @@ class InferenceWorker(QThread):
         class_names: Optional[Dict[int, str]] = None,
         is_turbo: bool = False,
         turbo_mode: Optional[bool] = None,
-        turbo_max_cap: int = 4,
+        turbo_max_cap: int = 8,
     ) -> None:
         super().__init__(parent)
         self.image_source = image_source
@@ -445,6 +445,31 @@ class InferenceWorker(QThread):
                 max_cap=self.turbo_max_cap,
             )
 
+            try:
+                import torch
+                cuda_avail = torch.cuda.is_available()
+            except Exception:
+                torch = None
+                cuda_avail = False
+
+            can_use_cuda_slicer = (
+                not self.is_mock
+                and _pytiling_available
+                and getattr(pytiling_core, "HAVE_CUDA", False)
+                and cuda_avail
+                and self.detector is not None
+                and self.detector.is_gpu_accelerated
+            )
+
+            d_img = None
+            if can_use_cuda_slicer:
+                try:
+                    d_img = torch.as_tensor(img, device="cuda")
+                except Exception as exc:
+                    logger.warning("InferenceWorker: Failed to upload image to GPU: %s. Using CPU fallback.", exc)
+                    can_use_cuda_slicer = False
+                    d_img = None
+
             all_global_detections: List[Any] = []
 
             for batch_start in range(0, total_tiles, batch_size):
@@ -453,18 +478,10 @@ class InferenceWorker(QThread):
                     self.progress_changed.emit(
                         batch_start, total_tiles, "Детекцію зупинено оператором."
                     )
+                    del d_img
                     return
 
                 batch_tiles = tiles[batch_start : batch_start + batch_size]
-                batch_slices = []
-                for tile in batch_tiles:
-                    tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
-                    tile_slice = img[ty : ty + th, tx : tx + tw]
-                    if tw == 736 and th == 736:
-                        tile_slice = cv2.resize(
-                            tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
-                        )
-                    batch_slices.append(tile_slice)
 
                 if self.is_mock:
                     batch_dets = []
@@ -491,7 +508,39 @@ class InferenceWorker(QThread):
                                 )
                         batch_dets.append(tile_dets)
                     time.sleep(0.002)
+                elif can_use_cuda_slicer and d_img is not None:
+                    d_batch = torch.empty(
+                        (len(batch_tiles), 3, model_size, model_size),
+                        dtype=torch.float32,
+                        device="cuda",
+                    )
+                    pytiling_core.extract_batch_tiles_gpu(
+                        d_img.data_ptr(),
+                        img_w * 3,
+                        img_w,
+                        img_h,
+                        batch_tiles,
+                        model_size,
+                        d_batch.data_ptr(),
+                        False,  # img is already RGB
+                        0,
+                    )
+                    batch_dets = self.detector.predict_batch(
+                        d_batch,
+                        tile_size=model_size,
+                        conf_threshold=self.conf_threshold,
+                    )
                 else:
+                    batch_slices = []
+                    for tile in batch_tiles:
+                        tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
+                        tile_slice = img[ty : ty + th, tx : tx + tw]
+                        if tw == 736 and th == 736:
+                            tile_slice = cv2.resize(
+                                tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+                            )
+                        batch_slices.append(tile_slice)
+
                     if len(batch_slices) == 1:
                         single_dets = self.detector.predict_tile(
                             batch_slices[0],
@@ -506,7 +555,7 @@ class InferenceWorker(QThread):
                             conf_threshold=self.conf_threshold,
                         )
 
-                del batch_slices
+                    del batch_slices
 
                 for i, (tile, tdets) in enumerate(zip(batch_tiles, batch_dets)):
                     tile_global_idx = batch_start + i
@@ -521,6 +570,8 @@ class InferenceWorker(QThread):
                 t_label = "тайла" if len(batch_tiles) == 1 else "тайлів"
                 status_msg = f"Обробка {t_label} {curr_done}/{total_tiles} ({mode_str}, знайдено: {len(all_global_detections)})..."
                 self.progress_changed.emit(curr_done, total_tiles, status_msg)
+
+            del d_img
 
             if self._is_cancelled:
                 return
@@ -841,7 +892,7 @@ def run_tiled_inference(
     class_names: Optional[Dict[int, str]] = None,
     is_turbo: bool = False,
     turbo_mode: Optional[bool] = None,
-    turbo_max_cap: int = 4,
+    turbo_max_cap: int = 8,
 ) -> List[Dict[str, Any]]:
     """Execute complete tiled detection pipeline on an image buffer."""
     img_h, img_w = img_rgb.shape[:2]
@@ -862,21 +913,36 @@ def run_tiled_inference(
         max_cap=turbo_max_cap,
     )
 
+    try:
+        import torch
+        cuda_avail = torch.cuda.is_available()
+    except Exception:
+        torch = None
+        cuda_avail = False
+
+    can_use_cuda_slicer = (
+        not is_mock
+        and _pytiling_available
+        and getattr(pytiling_core, "HAVE_CUDA", False)
+        and cuda_avail
+        and detector is not None
+        and detector.is_gpu_accelerated
+    )
+
+    d_img = None
+    if can_use_cuda_slicer:
+        try:
+            d_img = torch.as_tensor(img_rgb, device="cuda")
+        except Exception:
+            can_use_cuda_slicer = False
+            d_img = None
+
     all_global_detections: List[Any] = []
     for batch_start in range(0, total_tiles, batch_size):
         if is_cancelled_fn and is_cancelled_fn():
             break
 
         batch_tiles = tiles[batch_start : batch_start + batch_size]
-        batch_slices = []
-        for tile in batch_tiles:
-            tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
-            tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
-            if tw == 736 and th == 736:
-                tile_slice = cv2.resize(
-                    tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
-                )
-            batch_slices.append(tile_slice)
 
         if is_mock:
             batch_dets = []
@@ -903,7 +969,39 @@ def run_tiled_inference(
                         )
                 batch_dets.append(tile_dets)
             time.sleep(0.002)
+        elif can_use_cuda_slicer and d_img is not None:
+            d_batch = torch.empty(
+                (len(batch_tiles), 3, model_size, model_size),
+                dtype=torch.float32,
+                device="cuda",
+            )
+            pytiling_core.extract_batch_tiles_gpu(
+                d_img.data_ptr(),
+                img_w * 3,
+                img_w,
+                img_h,
+                batch_tiles,
+                model_size,
+                d_batch.data_ptr(),
+                False,  # img_rgb is already RGB
+                0,
+            )
+            batch_dets = detector.predict_batch(
+                d_batch,
+                tile_size=model_size,
+                conf_threshold=conf_threshold,
+            )
         else:
+            batch_slices = []
+            for tile in batch_tiles:
+                tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
+                tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
+                if tw == 736 and th == 736:
+                    tile_slice = cv2.resize(
+                        tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+                    )
+                batch_slices.append(tile_slice)
+
             if len(batch_slices) == 1:
                 single_dets = detector.predict_tile(
                     batch_slices[0],
@@ -918,7 +1016,7 @@ def run_tiled_inference(
                     conf_threshold=conf_threshold,
                 )
 
-        del batch_slices
+            del batch_slices
 
         for i, (tile, tdets) in enumerate(zip(batch_tiles, batch_dets)):
             tile_global_idx = batch_start + i
@@ -934,6 +1032,8 @@ def run_tiled_inference(
             t_label = "тайла" if len(batch_tiles) == 1 else "тайлів"
             status_msg = f"Обробка {t_label} {curr_done}/{total_tiles} ({mode_str}, знайдено: {len(all_global_detections)})..."
             progress_callback(curr_done, total_tiles, status_msg)
+
+    del d_img
 
     merged_detections = merge_boundary_detections(
         all_global_detections, tiles, diou_threshold=diou_threshold, conf_threshold=conf_threshold

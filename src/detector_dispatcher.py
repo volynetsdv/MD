@@ -231,16 +231,20 @@ GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 def calculate_safe_batch_size(
     target_tile_size: int = 640,
     is_turbo: bool = False,
-    max_cap: int = 4,
+    max_cap: Optional[int] = None,
     safety_factor: float = 0.80,
 ) -> int:
     """Analytical calculation of the maximum safe tile batch size for Turbo mode (OOM-Safety).
 
     Mathematical model:
         B_calc = floor((safety_factor * VRAM_free_MB) / Delta_tile(S_m))
-        B_target = clamp(B_calc, 1, max_cap)
+        B_target = clamp(B_calc, 1, effective_cap)
     where:
         Delta_tile(S_m) = 110.0 * (S_m / 640.0)^2 [MB]
+        If VRAM_free_MB < 200 MB -> B_target = 1 (strict OOM guard)
+        If max_cap is None:
+            If VRAM_free_MB >= 6000 MB: effective_cap = 12 (if S_m <= 416) else 8
+            Else: effective_cap = 4
     """
     if not is_turbo:
         return 1
@@ -254,13 +258,24 @@ def calculate_safe_batch_size(
         free_bytes, total_bytes = torch.cuda.mem_get_info()
         free_mb = float(free_bytes / (1024.0 * 1024.0))
 
+        if free_mb < 200.0:
+            return 1
+
+        if max_cap is None or max_cap <= 0:
+            if free_mb >= 6000.0:
+                effective_cap = 12 if target_tile_size <= 416 else 8
+            else:
+                effective_cap = 4
+        else:
+            effective_cap = max_cap
+
         norm_size = max(1.0, float(target_tile_size))
         cost_mb = 110.0 * ((norm_size / 640.0) ** 2)
         if cost_mb <= 0:
             cost_mb = 110.0
 
         b = int((free_mb * safety_factor) // cost_mb)
-        return max(1, min(b, max_cap))
+        return max(1, min(b, effective_cap))
     except Exception as exc:
         logger.warning("calculate_safe_batch_size: fallback to 1 due to exception: %s", exc)
         return 1
@@ -553,10 +568,21 @@ class TensorRTBackend(InferenceBackend):
         input_name = engine.get_tensor_name(0)
         output_name = engine.get_tensor_name(1)
 
-        b = input_array.shape[0] if input_array.ndim == 4 else 1
-        if not input_array.flags.c_contiguous:
-            input_array = np.ascontiguousarray(input_array)
-        d_input = torch.as_tensor(input_array, device="cuda")
+        if isinstance(input_array, torch.Tensor):
+            d_input = input_array if input_array.is_contiguous() else input_array.contiguous()
+            if not d_input.is_cuda:
+                d_input = d_input.cuda()
+            if d_input.ndim == 3:
+                d_input = d_input.unsqueeze(0)
+            b = d_input.shape[0]
+            input_shape = tuple(d_input.shape)
+        else:
+            b = input_array.shape[0] if input_array.ndim == 4 else 1
+            if not input_array.flags.c_contiguous:
+                input_array = np.ascontiguousarray(input_array)
+            d_input = torch.as_tensor(input_array, device="cuda")
+            input_shape = tuple(input_array.shape) if input_array.ndim == 4 else (1, 3, size, size)
+
         out_shape = list(engine.get_tensor_shape(output_name))
         out_shape[0] = b
 
@@ -567,7 +593,7 @@ class TensorRTBackend(InferenceBackend):
         if b > 1:
             try:
                 # Attempt native dynamic batch setting
-                context.set_input_shape(input_name, tuple(input_array.shape))
+                context.set_input_shape(input_name, input_shape)
                 d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
                 context.set_tensor_address(input_name, d_input.data_ptr())
                 context.set_tensor_address(output_name, d_output.data_ptr())
@@ -597,7 +623,7 @@ class TensorRTBackend(InferenceBackend):
                 return d_stacked.cpu().numpy()
         else:
             try:
-                context.set_input_shape(input_name, tuple(input_array.shape))
+                context.set_input_shape(input_name, input_shape)
             except Exception:
                 pass
             d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
@@ -1068,12 +1094,46 @@ class UnifiedDetector:
         Returns:
             List of length B, where each element is a List[Detection] in tile-local coordinates.
         """
-        if not tile_slices:
+        if tile_slices is None:
+            return []
+        if isinstance(tile_slices, (list, tuple)) and len(tile_slices) == 0:
+            return []
+        if hasattr(tile_slices, "numel") and tile_slices.numel() == 0:
             return []
 
         # If passed a single image, wrap appropriately
         if isinstance(tile_slices, np.ndarray) and tile_slices.ndim == 3:
             return [self.predict_tile(tile_slices, tile_size, conf_threshold, iou_threshold)]
+
+        # Fast path for 4D input (torch.Tensor or ndarray of shape B, 3, H, W)
+        if hasattr(tile_slices, "ndim") and tile_slices.ndim == 4:
+            b_size = tile_slices.shape[0]
+            if b_size == 0:
+                return []
+            target_size = self._snap_resolution(tile_size or tile_slices.shape[-1])
+            orig_size = (target_size, target_size)
+            session = self.get_session(target_size)
+            raw_output = self._backend_strategy.run_inference(session, tile_slices, target_size)
+
+            if raw_output.ndim == 2:
+                raw_output = np.expand_dims(raw_output, axis=0)
+            if raw_output.shape[1] >= 200 and raw_output.shape[2] < 200:
+                raw_output = np.transpose(raw_output, (0, 2, 1))
+            elif raw_output.shape[2] in (16, 20, 80, 84) and raw_output.shape[1] not in (16, 20, 80, 84):
+                raw_output = np.transpose(raw_output, (0, 2, 1))
+
+            batch_detections: List[List[Detection]] = []
+            for i in range(b_size):
+                single_raw = raw_output[i : i + 1]
+                dets = self._decode_yolo_output(
+                    raw_output=single_raw,
+                    model_size=target_size,
+                    original_size=orig_size,
+                    conf_threshold=conf_threshold,
+                    iou_threshold=iou_threshold,
+                )
+                batch_detections.append(dets)
+            return batch_detections
 
         # Preprocess items into contiguous 4D batch array (B, 3, target_size, target_size) directly
         b_size = len(tile_slices)

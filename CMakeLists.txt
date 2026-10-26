@@ -62,7 +62,7 @@ target_link_libraries(postprocess PUBLIC tiling_math)
 if(CUDA_AVAILABLE)
     add_library(cuda_slicer STATIC src/cuda_slicer.cu)
     target_include_directories(cuda_slicer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    set_target_properties(cuda_slicer PROPERTIES CUDA_STANDARD 17)
+    set_target_properties(cuda_slicer PROPERTIES CUDA_STANDARD 17 POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # --- TensorRT detector module (if CUDA and TensorRT available) ---
@@ -187,6 +187,12 @@ target_link_libraries(pytiling_core PRIVATE
     tiling_math
     postprocess
 )
+
+if(CUDA_AVAILABLE)
+    target_compile_definitions(pytiling_core PRIVATE HAVE_CUDA=1)
+    target_include_directories(pytiling_core PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(pytiling_core PRIVATE cuda_slicer CUDA::cudart)
+endif()
 
 # Place the .so / .pyd next to the build directory root so tests can import it without
 # any PYTHONPATH surgery.
