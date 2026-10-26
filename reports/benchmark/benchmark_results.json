@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "timestamp": "2026-10-06T16:21:13.447768+00:00",
+    "timestamp": "2026-10-14T15:51:25.876928+00:00",
     "hardware": {
       "os": "Linux 7.2.8-200.nobara.fc44.x86_64 (x86_64)",
       "python_version": "3.12.3",
@@ -36,75 +36,75 @@
   },
   "system_resource_telemetry": {
     "baseline": {
-      "rss_ram_mb": 1912.27,
-      "sys_ram_mb": 15761.98,
-      "vram_alloc_mb": 3874.38,
-      "vram_reserved_mb": 3874.38
+      "rss_ram_mb": 1906.46,
+      "sys_ram_mb": 20264.59,
+      "vram_alloc_mb": 4955.38,
+      "vram_reserved_mb": 4955.38
     },
     "final": {
-      "rss_ram_mb": 2004.44,
-      "sys_ram_mb": 15959.7,
-      "vram_alloc_mb": 3865.5,
-      "vram_reserved_mb": 3865.5
+      "rss_ram_mb": 1998.29,
+      "sys_ram_mb": 20434.08,
+      "vram_alloc_mb": 4950.62,
+      "vram_reserved_mb": 4950.62
     },
     "delta": {
-      "rss_ram_mb": 92.18,
-      "vram_alloc_mb": -8.88,
-      "vram_reserved_mb": -8.88
+      "rss_ram_mb": 91.82,
+      "vram_alloc_mb": -4.75,
+      "vram_reserved_mb": -4.75
     },
     "stats": {
       "rss_ram_mb": {
-        "mean": 2029.05,
-        "std": 48.05,
-        "min": 1912.73,
-        "max": 2327.9,
-        "p50": 2019.5,
-        "p90": 2106.05,
-        "p99": 2189.38
+        "mean": 2020.04,
+        "std": 46.61,
+        "min": 1906.91,
+        "max": 2217.41,
+        "p50": 2011.64,
+        "p90": 2094.93,
+        "p99": 2184.51
       },
       "vram_alloc_mb": {
-        "mean": 3865.99,
-        "std": 1.72,
-        "min": 3865.44,
-        "max": 3874.38,
-        "p50": 3865.5,
-        "p90": 3866.94,
-        "p99": 3874.38
+        "mean": 4952.88,
+        "std": 7.89,
+        "min": 4948.44,
+        "max": 4982.19,
+        "p50": 4950.75,
+        "p90": 4955.38,
+        "p99": 4982.19
       },
       "vram_reserved_mb": {
-        "mean": 3865.99,
-        "std": 1.72,
-        "min": 3865.44,
-        "max": 3874.38,
-        "p50": 3865.5,
-        "p90": 3866.94,
-        "p99": 3874.38
+        "mean": 4952.88,
+        "std": 7.89,
+        "min": 4948.44,
+        "max": 4982.19,
+        "p50": 4950.75,
+        "p90": 4955.38,
+        "p99": 4982.19
       },
       "gpu_compute_util_pct": {
-        "mean": 45.05,
-        "std": 21.45,
+        "mean": 42.31,
+        "std": 22.65,
         "min": 0.0,
         "max": 71.0,
-        "p50": 48.0,
-        "p90": 70.0,
+        "p50": 45.0,
+        "p90": 68.3,
         "p99": 71.0
       },
       "cpu_util_pct": {
-        "mean": 12.9,
-        "std": 3.9,
+        "mean": 14.59,
+        "std": 4.44,
         "min": 0.0,
-        "max": 41.5,
-        "p50": 11.5,
-        "p90": 18.3,
-        "p99": 25.9
+        "max": 39.7,
+        "p50": 13.1,
+        "p90": 20.83,
+        "p99": 29.3
       }
     },
     "memory_leak_check": {
-      "delta_rss_mb": 92.18,
+      "delta_rss_mb": 91.82,
       "threshold_mb": 50.0,
       "status": "FAIL"
     },
-    "samples_count": 647
+    "samples_count": 688
   },
   "batch_summary": {
     "total_images": 458,
@@ -113,81 +113,81 @@
     "hit_rate_percent": 100.0,
     "total_targets_detected": 85650,
     "average_targets_per_positive": 187.01,
-    "elapsed_seconds": 73.46,
-    "throughput_fps": 6.23,
+    "elapsed_seconds": 77.35,
+    "throughput_fps": 5.92,
     "output_detected_dir": "data/dota_v1.5/images/val_detected",
     "stage_latencies_ms": {
       "T_read": {
-        "mean": 17.78,
-        "std": 21.82,
-        "min": 0.64,
-        "max": 173.97,
-        "p50": 8.02,
-        "p90": 43.03,
-        "p99": 97.07
+        "mean": 19.62,
+        "std": 23.1,
+        "min": 0.98,
+        "max": 171.32,
+        "p50": 9.55,
+        "p90": 48.42,
+        "p99": 95.87
       },
       "T_tiling": {
-        "mean": 0.13,
+        "mean": 0.14,
         "std": 0.1,
         "min": 0.03,
-        "max": 0.62,
-        "p50": 0.09,
-        "p90": 0.28,
-        "p99": 0.37
+        "max": 0.56,
+        "p50": 0.1,
+        "p90": 0.3,
+        "p99": 0.39
       },
       "T_slice": {
-        "mean": 4.85,
-        "std": 19.0,
+        "mean": 5.13,
+        "std": 19.62,
         "min": 0.01,
-        "max": 172.56,
+        "max": 160.13,
         "p50": 0.08,
-        "p90": 0.39,
-        "p99": 85.59
+        "p90": 0.38,
+        "p99": 89.9
       },
       "T_infer": {
-        "mean": 102.39,
-        "std": 108.56,
-        "min": 3.99,
-        "max": 749.37,
-        "p50": 57.48,
-        "p90": 251.22,
-        "p99": 440.33
+        "mean": 106.38,
+        "std": 111.38,
+        "min": 4.03,
+        "max": 753.9,
+        "p50": 58.59,
+        "p90": 254.61,
+        "p99": 441.53
       },
       "T_remap": {
-        "mean": 5.3,
-        "std": 15.65,
+        "mean": 5.8,
+        "std": 16.47,
         "min": 0.08,
-        "max": 196.42,
-        "p50": 1.41,
-        "p90": 10.66,
-        "p99": 67.1
+        "max": 193.99,
+        "p50": 1.54,
+        "p90": 11.54,
+        "p99": 84.0
       },
       "T_nms": {
-        "mean": 19.78,
-        "std": 161.7,
-        "min": 0.17,
-        "max": 2777.43,
-        "p50": 0.99,
-        "p90": 10.48,
-        "p99": 310.2
+        "mean": 19.65,
+        "std": 153.4,
+        "min": 0.2,
+        "max": 2607.78,
+        "p50": 1.1,
+        "p90": 10.67,
+        "p99": 342.39
       },
       "T_io_write": {
-        "mean": 7.74,
-        "std": 10.74,
-        "min": 1.87,
-        "max": 135.61,
-        "p50": 5.41,
-        "p90": 12.43,
-        "p99": 54.53
+        "mean": 8.95,
+        "std": 12.14,
+        "min": 2.08,
+        "max": 163.99,
+        "p50": 6.11,
+        "p90": 15.57,
+        "p99": 67.16
       },
       "T_total": {
-        "mean": 158.11,
-        "std": 275.89,
-        "min": 6.86,
-        "max": 3724.79,
-        "p50": 77.77,
-        "p90": 328.36,
-        "p99": 1022.1
+        "mean": 165.82,
+        "std": 273.42,
+        "min": 7.59,
+        "max": 3559.88,
+        "p50": 83.14,
+        "p90": 335.77,
+        "p99": 1051.99
       }
     },
     "pcie_bandwidth_saved_percent": 99.9716
@@ -417,7 +417,7 @@
   },
   "benchmarks": {},
   "memory_leak_audit": {
-    "delta_rss_mb": 92.18,
+    "delta_rss_mb": 91.82,
     "threshold_mb": 50.0,
     "status": "FAIL"
   }
