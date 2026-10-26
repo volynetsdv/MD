@@ -145,6 +145,23 @@ std::vector<Detection> TRTDetector::infer(const float *d_input_tensor)
     return detections;
 }
 
+std::vector<std::vector<Detection>> TRTDetector::infer_batch(const float *d_batch_tensor, int batch_size, int tile_size)
+{
+    std::vector<std::vector<Detection>> results;
+    if (batch_size <= 0)
+        return results;
+
+    results.reserve(static_cast<size_t>(batch_size));
+    const size_t tile_elements = static_cast<size_t>(3) * tile_size * tile_size;
+
+    for (int i = 0; i < batch_size; ++i)
+    {
+        const float *d_slice = d_batch_tensor ? (d_batch_tensor + i * tile_elements) : nullptr;
+        results.push_back(infer(d_slice));
+    }
+    return results;
+}
+
 // Returns device memory in bytes allocated for TensorRT input and output buffers
 size_t TRTDetector::getDeviceMemoryUsage() const
 {

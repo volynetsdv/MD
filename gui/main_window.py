@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -45,6 +46,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -577,6 +579,24 @@ class MainWindow(QMainWindow):
             self.slider_conf.setValue(int(cfg.default_confidence * 100))
             self.status_bar.showMessage("Налаштування застосунку успішно оновлено", 3000)
 
+    def _on_performance_mode_changed(self) -> None:
+        """Handle toggle of standard vs turbo performance mode."""
+        is_turbo = hasattr(self, "rb_mode_turbo") and self.rb_mode_turbo.isChecked()
+        mode_str = "turbo" if is_turbo else "standard"
+        try:
+            self.cfg.performance_mode = mode_str
+            self.cfg.save()
+        except Exception as err:
+            logger.warning("Failed to save performance mode: %s", err)
+
+        if is_turbo:
+            from src.detector_dispatcher import calculate_safe_batch_size
+
+            b_est = calculate_safe_batch_size(target_tile_size=640, is_turbo=True)
+            self.status_bar.showMessage(f"Режим швидкодії: Turbo [B={b_est}]", 3000)
+        else:
+            self.status_bar.showMessage("Режим швидкодії: Стандартний [B=1]", 3000)
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Save layout geometry and splitter sizes upon window closure."""
         try:
@@ -694,6 +714,36 @@ class MainWindow(QMainWindow):
         layout_params.addWidget(lbl_vram, 1, 0)
         layout_params.addWidget(self.combo_vram, 1, 1)
 
+        # Performance Mode selection (Default B=1 Safe Edge vs Turbo Dynamic Max Batch)
+        lbl_mode = QLabel("Режим інференсу:", grp_params)
+        mode_box = QWidget(grp_params)
+        layout_mode = QVBoxLayout(mode_box)
+        layout_mode.setContentsMargins(0, 0, 0, 0)
+        layout_mode.setSpacing(4)
+
+        self.rb_mode_eco = QRadioButton("Стандартний (B = 1, Safe Edge)", mode_box)
+        self.rb_mode_eco.setToolTip("Послідовна обробка плиток з B=1. Максимальна безпека VRAM для Edge.")
+        self.rb_mode_turbo = QRadioButton("⚡ Max Performance", mode_box)
+        self.rb_mode_turbo.setToolTip("Динамічний розрахунок максимального безпечного пакета (Turbo B_max).")
+
+        self.btn_group_mode = QButtonGroup(self)
+        self.btn_group_mode.addButton(self.rb_mode_eco, 1)
+        self.btn_group_mode.addButton(self.rb_mode_turbo, 2)
+
+        if getattr(self.cfg, "performance_mode", "standard") == "turbo":
+            self.rb_mode_turbo.setChecked(True)
+        else:
+            self.rb_mode_eco.setChecked(True)
+
+        self.rb_mode_eco.toggled.connect(self._on_performance_mode_changed)
+        self.rb_mode_turbo.toggled.connect(self._on_performance_mode_changed)
+
+        layout_mode.addWidget(self.rb_mode_eco)
+        layout_mode.addWidget(self.rb_mode_turbo)
+
+        layout_params.addWidget(lbl_mode, 2, 0)
+        layout_params.addWidget(mode_box, 2, 1)
+
         # Start and Cancel Detection Buttons
         detect_layout = QHBoxLayout()
         self.btn_toggle_analysis = QPushButton("Почати аналіз", grp_params)
@@ -717,7 +767,7 @@ class MainWindow(QMainWindow):
 
         detect_layout.addWidget(self.btn_toggle_analysis, stretch=3)
         detect_layout.addWidget(self.btn_cancel, stretch=1)
-        layout_params.addLayout(detect_layout, 2, 0, 1, 2)
+        layout_params.addLayout(detect_layout, 3, 0, 1, 2)
 
         main_layout.addWidget(grp_params)
         main_layout.addStretch()
@@ -1226,6 +1276,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Ініціалізація інференсу...")
 
         shared_det = self.get_shared_detector()
+        is_turbo = hasattr(self, "rb_mode_turbo") and self.rb_mode_turbo.isChecked()
         # Asynchronous inference worker
         self._worker = InferenceWorker(
             image_source=image_source,
@@ -1235,6 +1286,7 @@ class MainWindow(QMainWindow):
             detector=shared_det,
             class_names=shared_det.get_class_names() if hasattr(shared_det, "get_class_names") else None,
             is_mock=self._is_mock_image,
+            is_turbo=is_turbo,
             parent=self,
         )
         self._worker.progress_changed.connect(self._on_worker_progress)
@@ -1436,6 +1488,7 @@ class MainWindow(QMainWindow):
             self._batch_worker.cancel()
 
         batch_det = self.get_batch_detector()
+        is_turbo = hasattr(self, "rb_mode_turbo") and self.rb_mode_turbo.isChecked()
         self._batch_worker = BatchTriageWorker(
             input_folder=str(input_p),
             output_folder=str(output_folder),
@@ -1444,6 +1497,7 @@ class MainWindow(QMainWindow):
             conf_threshold=conf_thresh,
             detector=batch_det,
             class_names=batch_det.get_class_names() if hasattr(batch_det, "get_class_names") else None,
+            is_turbo=is_turbo,
             parent=self,
         )
         self._batch_worker.progress_changed.connect(self._on_batch_progress)

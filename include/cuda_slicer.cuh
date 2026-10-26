@@ -39,3 +39,16 @@ cudaError_t extract_tile_gpu(const uint8_t *d_src_img,
                              const TileRect &rect,
                              int model_target_size,
                              float *d_dst_tensor);
+
+/**
+ * @brief Extract a batch of B tiles from a GPU-resident BGR image, resize each to model_target_size
+ *        and normalise into a float32 tensor of shape [batch_size, 3, target, target].
+ */
+cudaError_t extract_batch_tiles_gpu(const uint8_t *d_src_img,
+                                   int src_stride_bytes,
+                                   int src_w,
+                                   int src_h,
+                                   const TileRect *rects,
+                                   int batch_size,
+                                   int model_target_size,
+                                   float *d_dst_batch_tensor);

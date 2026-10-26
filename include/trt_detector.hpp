@@ -47,6 +47,9 @@ public:
     /// @return Detections in tile-local pixel coordinates.
     std::vector<Detection> infer(const float *d_input_tensor);
 
+    /// Run inference pass on a batch of B device-resident NCHW float32 tiles.
+    std::vector<std::vector<Detection>> infer_batch(const float *d_batch_tensor, int batch_size, int tile_size = 640);
+
     /// Total bytes currently held by this detector on the device.
     size_t getDeviceMemoryUsage() const;
 

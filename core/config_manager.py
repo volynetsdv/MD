@@ -36,6 +36,7 @@ class AppConfig:
     default_iou: float = 0.45
     default_altitude: float = 150.0
     default_vram_limit_mb: int = 2048
+    performance_mode: str = "standard"  # "standard" | "turbo"
 
     # 2. Visualization & Overlay parameters
     show_class_ids_only: bool = False
@@ -56,6 +57,11 @@ class AppConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
         return asdict(self)
+
+    @property
+    def is_turbo(self) -> bool:
+        """Return True if turbo performance mode is active."""
+        return self.performance_mode == "turbo"
 
     def save(self, path: Optional[Union[str, Path]] = None) -> bool:
         """Atomically persist configuration to JSON file.
@@ -117,6 +123,10 @@ class AppConfig:
 
             if "default_vram_limit_mb" in raw_data:
                 validated_data["default_vram_limit_mb"] = int(raw_data["default_vram_limit_mb"])
+
+            if "performance_mode" in raw_data:
+                pm = str(raw_data["performance_mode"]).strip().lower()
+                validated_data["performance_mode"] = pm if pm in ("standard", "turbo") else "standard"
 
             # Visualization
             if "show_class_ids_only" in raw_data:

@@ -376,6 +376,31 @@ QCheckBox::indicator:checked {
     border-color: #38bdf8;
 }
 
+/* Radio Buttons (Dark Tactical Theme) */
+QRadioButton {
+    color: #e2e8f0;
+    spacing: 6px;
+    background: transparent;
+    font-size: 12px;
+}
+
+QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    border: 1px solid #1e3563;
+    background-color: #080f1e;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #38bdf8;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #0284c7;
+    border: 2px solid #38bdf8;
+}
+
 /* Sliders */
 QSlider::groove:horizontal {
     border: 1px solid #1e3563;

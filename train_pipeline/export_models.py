@@ -204,6 +204,18 @@ def build_trt_engine(
             _create_placeholder_engine(engine_path, img_size)
             return False
 
+    # Dynamic batch optimization profile
+    input_tensor = network.get_input(0)
+    if input_tensor.shape[0] == -1:
+        profile = builder.create_optimization_profile()
+        profile.set_shape(
+            input_tensor.name,
+            (1, 3, img_size, img_size),
+            (4, 3, img_size, img_size),
+            (8, 3, img_size, img_size)
+        )
+        config.add_optimization_profile(profile)
+
     # Precision modes
     if fp16 and hasattr(trt.BuilderFlag, "FP16"):
         if getattr(builder, "platform_has_fast_fp16", True):
@@ -235,10 +247,11 @@ def build_trt_engine(
     # Build and serialize
     try:
         plan = builder.build_serialized_network(network, config)
-        if plan is not None and len(plan) > 0:
+        plan_size = getattr(plan, "nbytes", None) or (len(plan) if plan is not None else 0)
+        if plan is not None and plan_size > 0:
             with open(engine_path, "wb") as f:
                 f.write(plan)
-            logger.info(f"Successfully serialized TensorRT Engine ({len(plan)} bytes) -> {engine_path}")
+            logger.info(f"Successfully serialized TensorRT Engine ({plan_size} bytes) -> {engine_path}")
             return True
         else:
             logger.warning(
@@ -313,26 +326,39 @@ def export_single_profile(
 
     logger.info(f"--- Exporting Profile: resolution={img_size}x{img_size} ---")
 
-    # 1. Export ONNX (fixed batch=1, dynamic=False, opset=17, simplify=True)
-    logger.info(f"Exporting ONNX opset={opset}, dynamic=False, simplify=True, batch=1 -> {dest_onnx}")
+    # 1. Export ONNX (dynamic batch, fixed spatial resolution, opset=17, simplify=True)
+    logger.info(f"Exporting ONNX opset={opset}, dynamic=True, simplify=True -> {dest_onnx}")
     export_dev = int(device) if str(device).isdigit() else device
     temp_onnx = model.export(
         format="onnx",
         imgsz=img_size,
         opset=opset,
-        dynamic=False,
+        dynamic=True,
         simplify=True,
-        batch=1,
         device=export_dev,
     )
 
     temp_onnx_path = Path(temp_onnx)
-    if temp_onnx_path.resolve() != dest_onnx.resolve():
-        shutil.copy2(str(temp_onnx_path), str(dest_onnx))
-        try:
+    import onnx
+
+    onnx_model = onnx.load(str(temp_onnx_path))
+    anchors_map = {320: 2100, 416: 3549, 512: 5376, 640: 8400}
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[1].dim_value = 3
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[2].dim_value = img_size
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[3].dim_value = img_size
+
+    onnx_model.graph.output[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+    onnx_model.graph.output[0].type.tensor_type.shape.dim[1].dim_value = 20
+    if img_size in anchors_map:
+        onnx_model.graph.output[0].type.tensor_type.shape.dim[2].dim_value = anchors_map[img_size]
+
+    onnx.save(onnx_model, str(dest_onnx))
+    try:
+        if temp_onnx_path.resolve() != dest_onnx.resolve():
             temp_onnx_path.unlink()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     logger.info(f"Saved ONNX model ({dest_onnx.stat().st_size} bytes) -> {dest_onnx}")
 

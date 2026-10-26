@@ -105,3 +105,27 @@ cudaError_t extract_tile_gpu(const uint8_t* d_src_img,
 
     return cudaGetLastError();
 }
+
+cudaError_t extract_batch_tiles_gpu(const uint8_t* d_src_img,
+                                   int src_stride_bytes,
+                                   int src_w,
+                                   int src_h,
+                                   const TileRect* rects,
+                                   int batch_size,
+                                   int model_target_size,
+                                   float* d_dst_batch_tensor)
+{
+    if (!d_src_img || !d_dst_batch_tensor || !rects) return cudaErrorInvalidValue;
+    if (batch_size <= 0 || model_target_size <= 0) return cudaErrorInvalidValue;
+
+    const size_t tile_elements = static_cast<size_t>(3) * model_target_size * model_target_size;
+    for (int i = 0; i < batch_size; ++i) {
+        cudaError_t err = extract_tile_gpu(
+            d_src_img, src_stride_bytes, src_w, src_h,
+            rects[i], model_target_size,
+            d_dst_batch_tensor + i * tile_elements
+        );
+        if (err != cudaSuccess) return err;
+    }
+    return cudaSuccess;
+}

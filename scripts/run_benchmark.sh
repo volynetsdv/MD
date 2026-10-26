@@ -12,12 +12,12 @@ DETECTED_DIR="data/dota_v1.5/images/val_detected"
 REPORTS_DIR="reports/benchmark"
 
 echo "=========================================================================="
-echo " ЗАПУСК НАУКОВОГО БЕНЧМАРКУ ТА ПАКЕТНОГО ТРІАЖУ DOTA v1.5"
+echo " ЗАПУСК СИСТЕМНОГО БЕНЧМАРКУ ТА ПАКЕТНОГО ТРІАЖУ DOTA v1.5"
 echo "=========================================================================="
 echo " Корінь проєкту:     $WORKSPACE"
 echo " Вхідна папка:       $INPUT_DIR"
 echo " Папка результатів:  $DETECTED_DIR"
-echo " Звіти дисертації:   $REPORTS_DIR"
+echo " Звіти бенчмаркінгу: $REPORTS_DIR"
 echo "=========================================================================="
 
 # 3. Перевірка наявності вхідних зображень
@@ -35,12 +35,14 @@ if command -v nvidia-smi &> /dev/null; then
     nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 fi
 
-# 5. Запуск модуля бенчмаркінгу
+# 5. Запуск модуля бенчмаркінгу (подвійний компаративний прогін Standard vs Turbo)
 echo ""
-echo "[СТАРТ] Обробка зображень та неперервний моніторинг ресурсів..."
+echo "[СТАРТ] Обробка зображень та неперервний моніторинг ресурсів (режим both)..."
 
 QT_QPA_PLATFORM=offscreen python3 scripts/benchmark_system.py \
     --input "$INPUT_DIR" \
+    --mode both \
+    --turbo-max-cap 4 \
     --gt-labels-dir "data/dota_v1.5/labels/val" \
     --eval-accuracy \
     --output-detected-dir "$DETECTED_DIR" \
@@ -56,6 +58,6 @@ echo "==========================================================================
 echo " ЕКСПЕРИМЕНТ УСПІШНО ЗАВЕРШЕНО"
 echo "=========================================================================="
 echo "1. Збережені зображення та JSON-кеші: $DETECTED_DIR"
-echo "2. Науковий звіт для 3-го розділу:    $REPORTS_DIR/benchmark_summary.md"
+echo "2. Підсумковий звіт бенчмаркінгу:    $REPORTS_DIR/benchmark_summary.md"
 echo "3. Сирі заміри та часові ряди:        $REPORTS_DIR/benchmark_results.json"
 echo "=========================================================================="

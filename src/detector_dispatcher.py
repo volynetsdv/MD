@@ -228,6 +228,44 @@ class BackendType(str, enum.Enum):
 GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 
 
+def calculate_safe_batch_size(
+    target_tile_size: int = 640,
+    is_turbo: bool = False,
+    max_cap: int = 4,
+    safety_factor: float = 0.80,
+) -> int:
+    """Analytical calculation of the maximum safe tile batch size for Turbo mode (OOM-Safety).
+
+    Mathematical model:
+        B_calc = floor((safety_factor * VRAM_free_MB) / Delta_tile(S_m))
+        B_target = clamp(B_calc, 1, max_cap)
+    where:
+        Delta_tile(S_m) = 110.0 * (S_m / 640.0)^2 [MB]
+    """
+    if not is_turbo:
+        return 1
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return 1
+
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        free_mb = float(free_bytes / (1024.0 * 1024.0))
+
+        norm_size = max(1.0, float(target_tile_size))
+        cost_mb = 110.0 * ((norm_size / 640.0) ** 2)
+        if cost_mb <= 0:
+            cost_mb = 110.0
+
+        b = int((free_mb * safety_factor) // cost_mb)
+        return max(1, min(b, max_cap))
+    except Exception as exc:
+        logger.warning("calculate_safe_batch_size: fallback to 1 due to exception: %s", exc)
+        return 1
+
+
 MIN_ENGINE_SIZE_BYTES: int = 1048576  # 1 MB
 
 
@@ -506,7 +544,7 @@ class TensorRTBackend(InferenceBackend):
         return session
 
     def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
-        """Execute TensorRT forward pass directly in VRAM without host copies."""
+        """Execute TensorRT forward pass directly in VRAM without host copies with dynamic batching."""
         import torch
 
         engine = session["engine"]
@@ -515,15 +553,59 @@ class TensorRTBackend(InferenceBackend):
         input_name = engine.get_tensor_name(0)
         output_name = engine.get_tensor_name(1)
 
-        d_input = torch.from_numpy(input_array).cuda()
-        out_shape = engine.get_tensor_shape(output_name)
-        d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
+        b = input_array.shape[0] if input_array.ndim == 4 else 1
+        if not input_array.flags.c_contiguous:
+            input_array = np.ascontiguousarray(input_array)
+        d_input = torch.as_tensor(input_array, device="cuda")
+        out_shape = list(engine.get_tensor_shape(output_name))
+        out_shape[0] = b
 
-        context.set_tensor_address(input_name, d_input.data_ptr())
-        context.set_tensor_address(output_name, d_output.data_ptr())
-        context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
+        if not hasattr(self, "_cuda_stream") or self._cuda_stream is None:
+            self._cuda_stream = torch.cuda.Stream()
+        stream = self._cuda_stream
 
-        return d_output.cpu().numpy()
+        if b > 1:
+            try:
+                # Attempt native dynamic batch setting
+                context.set_input_shape(input_name, tuple(input_array.shape))
+                d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
+                context.set_tensor_address(input_name, d_input.data_ptr())
+                context.set_tensor_address(output_name, d_output.data_ptr())
+                context.execute_async_v3(stream.cuda_stream)
+                stream.synchronize()
+                return d_output.cpu().numpy()
+            except Exception as exc:
+                logger.warning(
+                    "TensorRT native dynamic batch execution failed for B=%d (size %d): %s. "
+                    "Executing per-slice in VRAM.",
+                    b,
+                    size,
+                    exc,
+                )
+                # Fixed batch size 1 engine fallback: execute per-slice in VRAM
+                out_shape[0] = 1
+                d_outs = []
+                for i in range(b):
+                    slice_i = d_input[i : i + 1].contiguous()
+                    d_out_i = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
+                    context.set_tensor_address(input_name, slice_i.data_ptr())
+                    context.set_tensor_address(output_name, d_out_i.data_ptr())
+                    context.execute_async_v3(stream.cuda_stream)
+                    d_outs.append(d_out_i)
+                stream.synchronize()
+                d_stacked = torch.cat(d_outs, dim=0)
+                return d_stacked.cpu().numpy()
+        else:
+            try:
+                context.set_input_shape(input_name, tuple(input_array.shape))
+            except Exception:
+                pass
+            d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
+            context.set_tensor_address(input_name, d_input.data_ptr())
+            context.set_tensor_address(output_name, d_output.data_ptr())
+            context.execute_async_v3(stream.cuda_stream)
+            stream.synchronize()
+            return d_output.cpu().numpy()
 
 
 class ONNXRuntimeBackendBase(InferenceBackend):
@@ -627,10 +709,35 @@ class ONNXRuntimeBackendBase(InferenceBackend):
         return session
 
     def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
-        """Run forward pass via ONNX Runtime."""
+        """Run forward pass via ONNX Runtime with native dynamic batching support."""
         input_name = session.get_inputs()[0].name
-        outputs = session.run(None, {input_name: input_array})
-        return outputs[0]
+        b = input_array.shape[0] if input_array.ndim == 4 else 1
+
+        if not input_array.flags.c_contiguous:
+            input_array = np.ascontiguousarray(input_array)
+
+        if b > 1:
+            try:
+                outputs = session.run(None, {input_name: input_array})
+                return outputs[0]
+            except Exception as exc:
+                logger.warning(
+                    "ONNXRuntime dynamic batch execution failed for B=%d (size %d): %s. "
+                    "Falling back to sequential slice evaluation.",
+                    b,
+                    size,
+                    exc,
+                )
+                # Fixed batch size 1 session: evaluate each batch item and concatenate along axis 0
+                out_slices = []
+                for i in range(b):
+                    slice_i = np.ascontiguousarray(input_array[i : i + 1])
+                    single_out = session.run(None, {input_name: slice_i})
+                    out_slices.append(single_out[0])
+                return np.concatenate(out_slices, axis=0)
+        else:
+            outputs = session.run(None, {input_name: input_array})
+            return outputs[0]
 
 
 class DirectMLBackend(ONNXRuntimeBackendBase):
@@ -942,6 +1049,132 @@ class UnifiedDetector:
 
         return detections
 
+    def predict_batch(
+        self,
+        tile_slices: Union[List[Any], np.ndarray],
+        tile_size: Optional[int] = None,
+        conf_threshold: float = 0.20,
+        iou_threshold: float = 0.45,
+    ) -> List[List[Detection]]:
+        """Run object detection on a batch of tiles.
+
+        Args:
+            tile_slices: List of B tile images (NumPy arrays or PyTorch Tensors)
+                         or a 4D array/tensor of shape (B, 3, H, W).
+            tile_size: Target resolution model size. If None, inferred from first tile.
+            conf_threshold: Minimum confidence score to accept detection.
+            iou_threshold: IoU threshold for Non-Maximum Suppression.
+
+        Returns:
+            List of length B, where each element is a List[Detection] in tile-local coordinates.
+        """
+        if not tile_slices:
+            return []
+
+        # If passed a single image, wrap appropriately
+        if isinstance(tile_slices, np.ndarray) and tile_slices.ndim == 3:
+            return [self.predict_tile(tile_slices, tile_size, conf_threshold, iou_threshold)]
+
+        # Preprocess items into contiguous 4D batch array (B, 3, target_size, target_size) directly
+        b_size = len(tile_slices)
+        first_item = tile_slices[0]
+        if hasattr(first_item, "shape"):
+            in_h0 = (
+                first_item.shape[0]
+                if (first_item.ndim == 3 and first_item.shape[2] in (1, 3, 4))
+                else first_item.shape[-2]
+            )
+        else:
+            in_h0 = 640
+        target_size = self._snap_resolution(640 if tile_size == 736 else (tile_size or in_h0))
+
+        batch_inputs = np.empty((b_size, 3, target_size, target_size), dtype=np.float32)
+        orig_sizes = []
+        for i, item in enumerate(tile_slices):
+            if hasattr(item, "detach") and hasattr(item, "cpu"):
+                item = item.detach().cpu().numpy()
+            if not isinstance(item, np.ndarray):
+                item = np.asarray(item)
+
+            if item.ndim == 3 and item.shape[2] in (1, 3, 4):
+                h_i, w_i = item.shape[0], item.shape[1]
+                orig_sizes.append((w_i, h_i))
+                if (h_i != target_size) or (w_i != target_size):
+                    if item.shape[2] == 4:
+                        item = item[:, :, :3]
+                    elif item.shape[2] == 1:
+                        item = np.repeat(item, 3, axis=2)
+                    item = cv2.resize(
+                        item, (target_size, target_size), interpolation=cv2.INTER_LINEAR
+                    )
+                    if item.ndim == 2:
+                        item = np.repeat(item[:, :, None], 3, axis=2)
+
+                if item.shape[2] == 4:
+                    item = item[:, :, :3]
+                elif item.shape[2] == 1:
+                    item = np.repeat(item, 3, axis=2)
+
+                if item.dtype == np.uint8:
+                    np.multiply(
+                        np.transpose(item, (2, 0, 1)),
+                        1.0 / 255.0,
+                        out=batch_inputs[i],
+                        dtype=np.float32,
+                    )
+                else:
+                    item_f = item.astype(np.float32) if item.dtype != np.float32 else item
+                    if item_f.max() > 1.5:
+                        item_f = item_f / 255.0
+                    batch_inputs[i] = np.transpose(item_f, (2, 0, 1))
+            else:
+                arr, h_i, w_i = self._preprocess_input(item)
+                orig_sizes.append((w_i, h_i))
+                if (h_i != target_size) or (w_i != target_size):
+                    hwc = np.transpose(arr[0], (1, 2, 0))
+                    resized = cv2.resize(
+                        hwc, (target_size, target_size), interpolation=cv2.INTER_LINEAR
+                    )
+                    batch_inputs[i] = np.transpose(resized, (2, 0, 1))
+                else:
+                    batch_inputs[i] = arr[0]
+
+        # Execute inference
+        session = self.get_session(target_size)
+        raw_output = self._run_inference(session, batch_inputs, target_size)
+
+        # Ensure raw_output is 3D with shape (B, C, N)
+        if raw_output.ndim == 2:
+            raw_output = np.expand_dims(raw_output, axis=0)
+
+        if raw_output.shape[1] >= 200 and raw_output.shape[2] < 200:
+            raw_output = np.transpose(raw_output, (0, 2, 1))
+        elif raw_output.shape[2] in (16, 20, 80, 84) and raw_output.shape[1] not in (16, 20, 80, 84):
+            raw_output = np.transpose(raw_output, (0, 2, 1))
+
+        # Decode each item in batch
+        batch_detections: List[List[Detection]] = []
+        for i in range(b_size):
+            single_raw = raw_output[i : i + 1]
+            in_w_i, in_h_i = orig_sizes[i]
+            decode_orig_size = (
+                (target_size, target_size)
+                if (tile_size == 736 or (in_h_i == 736 and in_w_i == 736))
+                else (in_w_i, in_h_i)
+            )
+            dets = self._decode_yolo_output(
+                raw_output=single_raw,
+                model_size=target_size,
+                original_size=decode_orig_size,
+                conf_threshold=conf_threshold,
+                iou_threshold=iou_threshold,
+            )
+            batch_detections.append(dets)
+
+        return batch_detections
+
+    infer_batch = predict_batch
+
     def _preprocess_input(self, data: Any) -> Tuple[np.ndarray, int, int]:
         """Convert input data (numpy or torch tensor) into normalized float32 NCHW."""
         # Convert PyTorch tensor to NumPy
@@ -979,6 +1212,9 @@ class UnifiedDetector:
             data = data.astype(np.float32)
             if data.max() > 1.5:  # [0..255] float
                 data /= 255.0
+
+        if not data.flags.c_contiguous:
+            data = np.ascontiguousarray(data)
 
         return data, h, w
 
