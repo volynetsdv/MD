@@ -82,7 +82,11 @@ def test_tensorrt_engines_presence(exported_models_dir: Path):
 
 def test_export_without_gpu_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog):
     """Verify build_trt_engine and export_all_profiles fall back cleanly without CUDA GPU/driver."""
-    monkeypatch.setattr("train_pipeline.export_models._is_cuda_gpu_available", lambda: False)
+    import train_pipeline.export_models as em
+
+    # 1. Force GPU-absent path regardless of whether tensorrt is installed on the runner
+    monkeypatch.setattr(em, "_is_cuda_gpu_available", lambda: False)
+    monkeypatch.setattr(em, "HAS_TENSORRT", True)
 
     out_dir = tmp_path / "cpu_only_export"
     with caplog.at_level("WARNING"):
@@ -102,21 +106,33 @@ def test_export_without_gpu_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert results[320]["engine"] is None
     assert "skipping TensorRT .engine build" in caplog.text
 
-    if HAS_TENSORRT:
-        import train_pipeline.export_models as em
+    # 2. Verify Windows CI scenario where both HAS_TENSORRT and CUDA GPU are False
+    caplog.clear()
+    monkeypatch.setattr(em, "HAS_TENSORRT", False)
+    with caplog.at_level("WARNING"):
+        res_no_trt = build_trt_engine(
+            onnx_path=results[320]["onnx"],
+            engine_path=out_dir / "yolo_320.engine",
+            img_size=320,
+        )
+    assert res_no_trt is None
+    assert "skipping TensorRT .engine build" in caplog.text
 
-        monkeypatch.setattr("train_pipeline.export_models._is_cuda_gpu_available", lambda: True)
+    # 3. Verify protection against TensorRT Builder TypeError (factory returned nullptr)
+    if HAS_TENSORRT and em.trt is not None:
+        monkeypatch.setattr(em, "HAS_TENSORRT", True)
+        monkeypatch.setattr(em, "_is_cuda_gpu_available", lambda: True)
 
         def _failing_builder(_logger):
             raise TypeError("pybind11::init(): factory function returned nullptr")
 
         monkeypatch.setattr(em.trt, "Builder", _failing_builder)
-        res = build_trt_engine(
+        res_null_builder = build_trt_engine(
             onnx_path=results[320]["onnx"],
             engine_path=out_dir / "yolo_320.engine",
             img_size=320,
         )
-        assert res is None
+        assert res_null_builder is None
 
 
 # =============================================================================

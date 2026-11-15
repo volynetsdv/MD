@@ -17,6 +17,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+# Prevent Ultralytics from invoking `pip install` during ONNX export in restricted/CI runners
+os.environ.setdefault("YOLO_AUTOINSTALL", "False")
+
 import cv2
 import numpy as np
 import torch
@@ -202,17 +205,17 @@ def build_trt_engine(
     engine_path = Path(engine_path)
     engine_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not HAS_TENSORRT:
-        logger.warning(
-            "TensorRT is not available; skipping .engine build and keeping ONNX artifact '%s'.",
-            onnx_path.name,
-        )
-        return None
-
     if not _is_cuda_gpu_available():
         logger.warning(
             "CUDA GPU/driver unavailable; skipping TensorRT .engine build for '%s' and keeping ONNX artifact.",
-            onnx_path.name,
+            onnx_path,
+        )
+        return None
+
+    if not HAS_TENSORRT:
+        logger.warning(
+            "TensorRT Python package not installed; skipping TensorRT .engine build for '%s'.",
+            onnx_path,
         )
         return None
 

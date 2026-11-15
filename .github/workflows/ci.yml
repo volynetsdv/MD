@@ -13,6 +13,7 @@ concurrency:
 
 env:
   QT_QPA_PLATFORM: offscreen
+  YOLO_AUTOINSTALL: "False"
 
 jobs:
   test-and-build:
@@ -87,7 +88,7 @@ jobs:
         shell: pwsh
         run: |
           pip uninstall -y onnxruntime-gpu onnxruntime
-          pip install onnxruntime-directml
+          pip install onnx onnxruntime-directml
           pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 ; if ($LASTEXITCODE -ne 0) { Write-Host "Optional CUDA wheels skipped" }
 
       - name: Prepare model assets
