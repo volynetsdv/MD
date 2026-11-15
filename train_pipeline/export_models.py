@@ -9,6 +9,7 @@ with FP16 half-precision and INT8 Post-Training Quantization (PTQ) support.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import logging
 import os
 import shutil
@@ -36,6 +37,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
+
+
+def _is_cuda_gpu_available() -> bool:
+    """Return True if a physical NVIDIA CUDA GPU and working driver are accessible."""
+    cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_vis is not None and cuda_vis.strip().lower() in ("", "-1", "none", "nodevfiles"):
+        return False
+
+    try:
+        import pytiling_core
+
+        if hasattr(pytiling_core, "get_gpu_memory_info"):
+            _, total_bytes = pytiling_core.get_gpu_memory_info()
+            if total_bytes > 0:
+                return True
+    except Exception:
+        pass
+
+    try:
+        lib_names = (
+            ("cudart64_12.dll", "cudart64_13.dll", "cudart64_110.dll")
+            if sys.platform == "win32"
+            else ("libcudart.so", "libcudart.so.12", "libcudart.so.13")
+        )
+        for lib_name in lib_names:
+            try:
+                cudart = ctypes.CDLL(lib_name)
+                count = ctypes.c_int(0)
+                if cudart.cudaGetDeviceCount(ctypes.byref(count)) == 0 and count.value > 0:
+                    return True
+            except OSError:
+                continue
+    except Exception:
+        pass
+
+    try:
+        return bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -142,7 +182,7 @@ def build_trt_engine(
     int8: bool = False,
     calib_dir: Optional[Union[str, Path]] = None,
     workspace_mb: int = 2048,
-) -> bool:
+) -> Optional[bool]:
     """Compile a TensorRT engine from an ONNX model file.
 
     Args:
@@ -155,7 +195,8 @@ def build_trt_engine(
         workspace_mb: Maximum GPU workspace allocation in MB.
 
     Returns:
-        True if the engine was successfully compiled or created.
+        True if the engine was compiled, or None if CUDA GPU / TensorRT builder
+        is unavailable in the current environment (keeping the ONNX artifact intact).
     """
     onnx_path = Path(onnx_path)
     engine_path = Path(engine_path)
@@ -163,11 +204,17 @@ def build_trt_engine(
 
     if not HAS_TENSORRT:
         logger.warning(
-            "TensorRT is not available. Creating placeholder engine file for '%s'.",
-            engine_path.name,
+            "TensorRT is not available; skipping .engine build and keeping ONNX artifact '%s'.",
+            onnx_path.name,
         )
-        _create_placeholder_engine(engine_path, img_size)
-        return True
+        return None
+
+    if not _is_cuda_gpu_available():
+        logger.warning(
+            "CUDA GPU/driver unavailable; skipping TensorRT .engine build for '%s' and keeping ONNX artifact.",
+            onnx_path.name,
+        )
+        return None
 
     logger.info(
         "Compiling TensorRT Engine for %dx%d [FP16=%s, INT8=%s, Workspace=%dMB] -> %s",
@@ -180,7 +227,21 @@ def build_trt_engine(
     )
 
     trt_logger = trt.Logger(trt.Logger.WARNING)
-    builder = trt.Builder(trt_logger)
+    try:
+        builder = trt.Builder(trt_logger)
+    except (TypeError, RuntimeError) as exc:
+        logger.warning(
+            "TensorRT Builder initialization failed (%s); skipping .engine build and keeping ONNX artifact '%s'.",
+            exc,
+            onnx_path.name,
+        )
+        return None
+    if builder is None:
+        logger.warning(
+            "TensorRT Builder returned None; skipping .engine build and keeping ONNX artifact '%s'.",
+            onnx_path.name,
+        )
+        return None
     config = builder.create_builder_config()
 
     # Workspace memory pool configuration
@@ -293,7 +354,7 @@ def export_single_profile(
     workspace_mb: int = 2048,
     opset: int = 17,
     device: str = "cpu",
-) -> Tuple[Path, Path]:
+) -> Tuple[Path, Optional[Path]]:
     """Export a single model resolution to ONNX and compile to TensorRT Engine.
 
     Args:
@@ -351,8 +412,8 @@ def export_single_profile(
 
     logger.info("Saved ONNX model (%d bytes) -> %s", dest_onnx.stat().st_size, dest_onnx)
 
-    # 2. Build TensorRT Engine
-    build_trt_engine(
+    # 2. Build TensorRT Engine (skipped safely on CPU-only hosts without physical CUDA GPU)
+    built = build_trt_engine(
         onnx_path=dest_onnx,
         engine_path=dest_engine,
         img_size=img_size,
@@ -362,7 +423,7 @@ def export_single_profile(
         workspace_mb=workspace_mb,
     )
 
-    return dest_onnx, dest_engine
+    return dest_onnx, (dest_engine if built else None)
 
 
 def resolve_weights(weights: Optional[Union[str, Path]] = None) -> Union[str, Path]:
@@ -415,7 +476,7 @@ def export_all_profiles(
     workspace_mb: int = 2048,
     opset: int = 17,
     device: Optional[Union[str, int]] = None,
-) -> Dict[int, Dict[str, Path]]:
+) -> Dict[int, Dict[str, Optional[Path]]]:
     """Export all four model resolutions [320, 416, 512, 640] to ONNX and TensorRT.
 
     Args:
@@ -475,9 +536,9 @@ def export_all_profiles(
         logger.info("Verified: Model configured with 16 DOTA 1.5 classes.")
 
     if device is None or str(device).lower() == "auto":
-        device = 0 if torch.cuda.is_available() else "cpu"
+        device = 0 if _is_cuda_gpu_available() else "cpu"
 
-    results: Dict[int, Dict[str, Path]] = {}
+    results: Dict[int, Dict[str, Optional[Path]]] = {}
     for sz in sizes:
         onnx_file, engine_file = export_single_profile(
             model=model,
@@ -550,7 +611,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         type=str,
-        default="0" if torch.cuda.is_available() else "cpu",
+        default="0" if _is_cuda_gpu_available() else "cpu",
         help="Execution device for ONNX export (default: 0 if CUDA available else cpu)",
     )
     return parser.parse_args()
