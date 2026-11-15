@@ -27,7 +27,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
 )
-logger = logging.getLogger("WeightsManager")
+logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_URLS: Dict[str, str] = {
     "yolo_320.onnx": "https://github.com/volynetsdv/MD/releases/download/v1.0.0-weights/yolo_320.onnx",

@@ -30,7 +30,7 @@ from gui.async_worker import (
 )
 from src.detector_dispatcher import DEFAULT_CLASS_NAMES, UnifiedDetector
 
-logger = logging.getLogger("BatchTriageWorker")
+logger = logging.getLogger(__name__)
 
 
 class BatchTriageWorker(QThread):
@@ -56,6 +56,9 @@ class BatchTriageWorker(QThread):
         output_dir: Optional[Union[str, Path]] = None,
         conf_thresh: Optional[float] = None,
         class_names: Optional[Dict[int, str]] = None,
+        is_turbo: bool = False,
+        turbo_mode: Optional[bool] = None,
+        turbo_max_cap: int = 4,
     ) -> None:
         super().__init__(parent)
         in_dir = input_dir if input_dir is not None else input_folder
@@ -79,6 +82,8 @@ class BatchTriageWorker(QThread):
         self.detector = detector
         self.use_cache = bool(use_cache)
         self.class_names = dict(class_names) if class_names else None
+        self.is_turbo = bool(turbo_mode) if turbo_mode is not None else bool(is_turbo)
+        self.turbo_max_cap = int(turbo_max_cap)
         self._is_cancelled: bool = False
 
     def get_class_names(self) -> Dict[int, str]:
@@ -243,6 +248,8 @@ class BatchTriageWorker(QThread):
                 diou_threshold=self.diou_threshold,
                 detector=detector,
                 class_names=cnames,
+                is_turbo=self.is_turbo,
+                turbo_max_cap=self.turbo_max_cap,
             )
 
         for d in dets:

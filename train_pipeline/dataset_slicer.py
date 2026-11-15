@@ -56,7 +56,7 @@ except ModuleNotFoundError:
             "is built via CMake (e.g. 'cmake -B build && cmake --build build')."
         )
 
-logger = logging.getLogger("AerialDatasetSlicer")
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -446,15 +446,15 @@ class DotaOBBAdapter(BaseAnnotationAdapter):
 
 
 def detect_format(label_file_path: Union[str, Path]) -> str:
-    """
-    Automatically detect annotation format from a label file.
+    """Automatically detect annotation format from a label file.
 
-    Returns
-    -------
-    str
-        'yolo' for normalized YOLO HBB (5 numerical columns)
-        'yolo_obb' for normalized YOLO OBB (9 numerical columns: class_id x1 y1 x2 y2 x3 y3 x4 y4)
-        'dota' for DOTA OBB (8 numerical coordinates + class name string [+ difficult])
+    Args:
+        label_file_path: Path to the annotation text file.
+
+    Returns:
+        'yolo' for normalized YOLO HBB (5 numerical columns),
+        'yolo_obb' for normalized YOLO OBB (9 numerical columns), or
+        'dota' for DOTA OBB (8 numerical coordinates + class name string).
     """
     path = Path(label_file_path)
     if not path.exists():
@@ -534,28 +534,17 @@ def clip_and_normalize_bbox(
     tile_rect: Any,
     min_area_ratio: float = 0.25,
 ) -> Optional[YOLOBox]:
-    """
-    Compute intersection of an absolute bounding box with a tile, filter fragments,
+    """Compute intersection of an absolute bounding box with a tile, filter fragments,
     and normalize coordinates to tile space [0.0, 1.0].
 
-    Parameters
-    ----------
-    box : YOLOBox
-        Original box in normalized coordinates [0.0, 1.0] relative to the source image.
-    img_w : int
-        Full source image width (pixels).
-    img_h : int
-        Full source image height (pixels).
-    tile_rect : Any
-        Tile rectangle with attributes x, y, w, h (e.g. pytiling_core.Rect).
-    min_area_ratio : float
-        Minimum retained area ratio threshold (default: 0.25 = 25%).
-        If the clipped area in the tile is less than this fraction of the original box
-        area, the fragment is discarded.
+    Args:
+        box: Original box in normalized coordinates [0.0, 1.0] relative to the source image.
+        img_w: Full source image width (pixels).
+        img_h: Full source image height (pixels).
+        tile_rect: Tile rectangle with attributes x, y, w, h (e.g. pytiling_core.Rect).
+        min_area_ratio: Minimum retained area ratio threshold (default: 0.25 = 25%).
 
-    Returns
-    -------
-    Optional[YOLOBox]
+    Returns:
         Remapped and clamped YOLOBox in tile-relative coordinates [0.0, 1.0],
         or None if the box does not intersect the tile or was filtered out.
     """
@@ -804,45 +793,26 @@ class AerialDatasetSlicer:
         class_map: Optional[Dict[str, int]] = None,
         ignore_difficult: bool = False,
         **kwargs: Any,
-    ):
-        """
-        Initialize the AerialDatasetSlicer.
+    ) -> None:
+        """Initialize the AerialDatasetSlicer.
 
-        Parameters
-        ----------
-        image_dir : Union[str, Path]
-            Path to folder containing source aerial images.
-        annotation_dir : Union[str, Path]
-            Path to folder containing corresponding annotations (.txt).
-        output_dir : Union[str, Path]
-            Destination directory where Ultralytics structure (images/split, labels/split)
-            will be created.
-        altitude : float
-            UAV altitude telemetry in meters (influences tile size and overlap).
-        vram_mb : int
-            Target GPU VRAM in MB used by libtiling_core for grid computation.
-        min_area_ratio : float
-            Threshold ratio (default: 0.25) to discard object fragments cut by tile seams.
-        target_size : Optional[int]
-            Optional target resolution override (320, 416, 512, or 640). If None,
-            automatically picked by calculate_tiling_params.
-        split : str
-            Dataset partition name, e.g. 'train', 'val', or 'test'.
-        save_empty_tiles : bool
-            If True, saves tiles even if they contain zero object annotations.
-        resize_to_target : bool
-            If True, resizes edge tiles to the target square resolution (e.g. 640x640).
-        num_workers : Optional[int]
-            Number of worker processes for ProcessPoolExecutor. If None, defaults
-            to os.cpu_count().
-        image_extensions : Tuple[str, ...]
-            Supported image file extensions (case-insensitive).
-        format : str
-            Annotation format: 'auto' (detect), 'yolo' (YOLO HBB), or 'dota' (DOTA v1.5 OBB).
-        class_map : Optional[Dict[str, int]]
-            Optional mapping of category names to integer class IDs for DOTA.
-        ignore_difficult : bool
-            If True, skips annotations marked with difficult=1 in DOTA.
+        Args:
+            image_dir: Path to folder containing source aerial images.
+            annotation_dir: Path to folder containing corresponding annotations (.txt).
+            output_dir: Destination directory where Ultralytics structure (images/split, labels/split)
+                will be created.
+            altitude: UAV altitude telemetry in meters (influences tile size and overlap).
+            vram_mb: Target GPU VRAM in MB used by libtiling_core for grid computation.
+            min_area_ratio: Threshold ratio (default: 0.25) to discard object fragments cut by tile seams.
+            target_size: Optional target resolution override (320, 416, 512, or 640).
+            split: Dataset partition name, e.g. 'train', 'val', or 'test'.
+            save_empty_tiles: If True, saves tiles even if they contain zero object annotations.
+            resize_to_target: If True, resizes edge tiles to the target square resolution.
+            num_workers: Number of worker processes for ProcessPoolExecutor.
+            image_extensions: Supported image file extensions (case-insensitive).
+            format: Annotation format ('auto', 'yolo', 'yolo_obb', or 'dota').
+            class_map: Optional mapping of category names to integer class IDs.
+            ignore_difficult: If True, skips annotations marked with difficult=1 in DOTA.
         """
         self.image_dir = Path(image_dir)
         self.annotation_dir = Path(annotation_dir)
@@ -881,19 +851,13 @@ class AerialDatasetSlicer:
     def slice_single_image(
         self, image_path: Union[str, Path], annotation_path: Optional[Union[str, Path]] = None
     ) -> Dict[str, Any]:
-        """
-        Process and slice a single image synchronously.
+        """Process and slice a single image synchronously.
 
-        Parameters
-        ----------
-        image_path : Union[str, Path]
-            Path to the input image file.
-        annotation_path : Optional[Union[str, Path]]
-            Path to the matching annotation file (.txt). If None, searches in self.annotation_dir.
+        Args:
+            image_path: Path to the input image file.
+            annotation_path: Path to the matching annotation file (.txt). If None, searches in self.annotation_dir.
 
-        Returns
-        -------
-        Dict[str, Any]
+        Returns:
             Execution status and statistics dictionary.
         """
         img_path = Path(image_path)
@@ -991,18 +955,18 @@ class AerialDatasetSlicer:
             json.dump(slicing_meta, f, indent=2, ensure_ascii=False)
 
         logger.info(
-            f"Generated dataset configurations: '{dataset_yaml_path}' and '{slicing_meta_path}' "
-            f"(tile_size={effective_tile_size}, classes={len(sorted_names)})"
+            "Generated dataset configurations: '%s' and '%s' (tile_size=%d, classes=%d)",
+            dataset_yaml_path,
+            slicing_meta_path,
+            effective_tile_size,
+            len(sorted_names),
         )
         return dataset_yaml_path, slicing_meta_path
 
     def process_dataset(self) -> Dict[str, Any]:
-        """
-        Slice all images in image_dir using multi-process parallel execution.
+        """Slice all images in image_dir using multi-process parallel execution.
 
-        Returns
-        -------
-        Dict[str, Any]
+        Returns:
             Overall dataset slicing summary report.
         """
         image_files = self.find_image_files()
@@ -1054,14 +1018,9 @@ class AerialDatasetSlicer:
         else:
             fmt_display = resolved_fmt.upper()
 
-        telemetry_lines = [
-            f"[INFO] Images found: {total_images}",
-            f"[INFO] Matching annotation files found: {found_labels_count}",
-            f"[INFO] Detected annotation format: {fmt_display}",
-        ]
-        for t_line in telemetry_lines:
-            print(t_line)
-            logger.info(t_line)
+        logger.info("Images found: %d", total_images)
+        logger.info("Matching annotation files found: %d", found_labels_count)
+        logger.info("Detected annotation format: %s", fmt_display)
 
         tasks: List[Dict[str, Any]] = []
         for mt in matching_tasks:
@@ -1143,8 +1102,11 @@ class AerialDatasetSlicer:
         }
 
         logger.info(
-            f"Dataset slicing complete: {summary['processed_successfully']}/{total_images} images processed, "
-            f"{total_tiles} tiles generated, {total_annotations} annotations created."
+            "Dataset slicing complete: %d/%d images processed, %d tiles generated, %d annotations created.",
+            summary["processed_successfully"],
+            total_images,
+            total_tiles,
+            total_annotations,
         )
 
         return summary

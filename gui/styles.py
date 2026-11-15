@@ -13,13 +13,13 @@ QMainWindow, QDialog {
 /* ========================================================================= */
 /*               DIALOG WINDOWS & FILE EXPLORER (QFileDialog)               */
 /* ========================================================================= */
-/* 1. Головне вікно діалогу */
+/* 1. Main dialog window */
 QFileDialog {
     background-color: #0b1326;
     color: #e2e8f0;
 }
 
-/* 2. Область перегляду файлів та каталогів (Таблиця / Дерево / Списки) */
+/* 2. File and directory view area (Table / Tree / Lists) */
 QFileDialog QTreeView, 
 QFileDialog QListView, 
 QFileDialog QTableView,
@@ -35,7 +35,7 @@ QFileDialog QAbstractItemView {
     font-size: 13px;
 }
 
-/* Внутрішній viewport для надійного усунення білого фону */
+/* Inner viewport to prevent white background artifacts */
 QFileDialog QAbstractScrollArea::viewport,
 QFileDialog QTreeView::viewport,
 QFileDialog QListView::viewport,
@@ -45,7 +45,7 @@ QFileDialog QAbstractItemView::viewport {
     color: #e2e8f0;
 }
 
-/* 3. Елементи списку при наведенні та виборі */
+/* 3. List items on hover and selection */
 QFileDialog QTreeView::item,
 QFileDialog QListView::item,
 QFileDialog QTableView::item {
@@ -67,7 +67,7 @@ QFileDialog QTableView::item:selected {
     color: #ffffff;
 }
 
-/* 4. Заголовки колонок (Name, Size, Type, Date Modified) */
+/* 4. Column headers (Name, Size, Type, Date Modified) */
 QFileDialog QHeaderView,
 QFileDialog QHeaderView::section {
     background-color: #0f1d3a;
@@ -80,7 +80,7 @@ QFileDialog QHeaderView::section {
     font-size: 12px;
 }
 
-/* 5. Ліва панель швидкого доступу (Sidebar: Computer, Places) */
+/* 5. Left quick-access panel (Sidebar: Computer, Places) */
 QFileDialog QWidget#sidebar,
 QFileDialog QToolBox,
 QFileDialog QTreeView#sidebar,
@@ -91,7 +91,7 @@ QFileDialog QFrame#sidebar {
     border-right: 1px solid #1e3563;
 }
 
-/* 6. Поля введення (Шлях, Назва папки/файлу, Фільтр типів) */
+/* 6. Input fields (Path, Directory/File Name, File Type Filter) */
 QFileDialog QLineEdit,
 QFileDialog QComboBox {
     background-color: #0f1d3a;
@@ -115,7 +115,7 @@ QFileDialog QComboBox QAbstractItemView {
     selection-color: #ffffff;
 }
 
-/* 7. Кнопки (Choose, Cancel, навігаційні стрілки вгору/назад) */
+/* 7. Buttons (Choose, Cancel, navigation up/back arrows) */
 QFileDialog QPushButton,
 QFileDialog QToolButton {
     background-color: #0f1d3a;
@@ -140,7 +140,7 @@ QFileDialog QToolButton:pressed {
     color: #ffffff;
 }
 
-/* 8. Текстові мітки (Look in:, Directory:, Files of type:) */
+/* 8. Text labels (Look in:, Directory:, Files of type:) */
 QFileDialog QLabel {
     color: #94a3b8;
     font-size: 13px;
@@ -374,6 +374,31 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #0284c7;
     border-color: #38bdf8;
+}
+
+/* Radio Buttons (Dark Tactical Theme) */
+QRadioButton {
+    color: #e2e8f0;
+    spacing: 6px;
+    background: transparent;
+    font-size: 12px;
+}
+
+QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    border: 1px solid #1e3563;
+    background-color: #080f1e;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #38bdf8;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #0284c7;
+    border: 2px solid #38bdf8;
 }
 
 /* Sliders */

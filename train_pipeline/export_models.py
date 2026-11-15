@@ -6,6 +6,8 @@ fixed batch=1, static shapes) and compiles high-performance TensorRT Engines
 with FP16 half-precision and INT8 Post-Training Quantization (PTQ) support.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import os
@@ -31,7 +33,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
 )
-logger = logging.getLogger("ExportEngine")
+logger = logging.getLogger(__name__)
 
 GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 
@@ -72,7 +74,9 @@ if HAS_TENSORRT and hasattr(trt, "IInt8EntropyCalibrator2"):
                 self.image_paths = []
 
             logger.info(
-                f"[Calibrator] Found {len(self.image_paths)} calibration images in '{self.calib_dir}'."
+                "[Calibrator] Found %d calibration images in '%s'.",
+                len(self.image_paths),
+                self.calib_dir,
             )
 
             # Allocate GPU memory buffer for the batch
@@ -113,13 +117,13 @@ if HAS_TENSORRT and hasattr(trt, "IInt8EntropyCalibrator2"):
         def read_calibration_cache(self) -> Optional[bytes]:
             if os.path.exists(self.cache_file):
                 with open(self.cache_file, "rb") as f:
-                    logger.info(f"[Calibrator] Reading calibration cache from '{self.cache_file}'.")
+                    logger.info("[Calibrator] Reading calibration cache from '%s'.", self.cache_file)
                     return f.read()
             return None
 
         def write_calibration_cache(self, cache: bytes) -> None:
             with open(self.cache_file, "wb") as f:
-                logger.info(f"[Calibrator] Writing calibration cache to '{self.cache_file}'.")
+                logger.info("[Calibrator] Writing calibration cache to '%s'.", self.cache_file)
                 f.write(cache)
 else:
     class YOLOInt8Calibrator:  # type: ignore
@@ -139,29 +143,18 @@ def build_trt_engine(
     calib_dir: Optional[Union[str, Path]] = None,
     workspace_mb: int = 2048,
 ) -> bool:
-    """
-    Compile a TensorRT engine from an ONNX model file.
+    """Compile a TensorRT engine from an ONNX model file.
 
-    Parameters
-    ----------
-    onnx_path : Union[str, Path]
-        Path to input ONNX file.
-    engine_path : Union[str, Path]
-        Path to output serialized engine file.
-    img_size : int
-        Square input resolution (e.g. 320, 416, 512, 640).
-    fp16 : bool
-        Enable FP16 half-precision mode.
-    int8 : bool
-        Enable INT8 quantization mode.
-    calib_dir : Optional[Union[str, Path]]
-        Directory containing calibration images for INT8 PTQ.
-    workspace_mb : int
-        Maximum GPU workspace allocation in MB.
+    Args:
+        onnx_path: Path to input ONNX file.
+        engine_path: Path to output serialized engine file.
+        img_size: Square input resolution (e.g. 320, 416, 512, 640).
+        fp16: Enable FP16 half-precision mode.
+        int8: Enable INT8 quantization mode.
+        calib_dir: Directory containing calibration images for INT8 PTQ.
+        workspace_mb: Maximum GPU workspace allocation in MB.
 
-    Returns
-    -------
-    bool
+    Returns:
         True if the engine was successfully compiled or created.
     """
     onnx_path = Path(onnx_path)
@@ -170,14 +163,20 @@ def build_trt_engine(
 
     if not HAS_TENSORRT:
         logger.warning(
-            f"TensorRT is not available. Creating placeholder engine file for '{engine_path.name}'."
+            "TensorRT is not available. Creating placeholder engine file for '%s'.",
+            engine_path.name,
         )
         _create_placeholder_engine(engine_path, img_size)
         return True
 
     logger.info(
-        f"Compiling TensorRT Engine for {img_size}x{img_size} "
-        f"[FP16={fp16}, INT8={int8}, Workspace={workspace_mb}MB] -> {engine_path}"
+        "Compiling TensorRT Engine for %dx%d [FP16=%s, INT8=%s, Workspace=%dMB] -> %s",
+        img_size,
+        img_size,
+        fp16,
+        int8,
+        workspace_mb,
+        engine_path,
     )
 
     trt_logger = trt.Logger(trt.Logger.WARNING)
@@ -200,9 +199,21 @@ def build_trt_engine(
     with open(onnx_path, "rb") as f:
         if not parser.parse(f.read()):
             for err_idx in range(parser.num_errors):
-                logger.error(f"[TRT Parser] {parser.get_error(err_idx)}")
+                logger.error("[TRT Parser] %s", parser.get_error(err_idx))
             _create_placeholder_engine(engine_path, img_size)
             return False
+
+    # Dynamic batch optimization profile
+    input_tensor = network.get_input(0)
+    if input_tensor.shape[0] == -1:
+        profile = builder.create_optimization_profile()
+        profile.set_shape(
+            input_tensor.name,
+            (1, 3, img_size, img_size),
+            (4, 3, img_size, img_size),
+            (8, 3, img_size, img_size)
+        )
+        config.add_optimization_profile(profile)
 
     # Precision modes
     if fp16 and hasattr(trt.BuilderFlag, "FP16"):
@@ -226,8 +237,8 @@ def build_trt_engine(
                 config.int8_calibrator = calibrator
             else:
                 logger.warning(
-                    f"INT8 requested but calibration directory '{calib_dir}' is invalid or empty. "
-                    "Proceeding with dynamic ranges."
+                    "INT8 requested but calibration directory '%s' is invalid or empty. Proceeding with dynamic ranges.",
+                    calib_dir,
                 )
         else:
             logger.warning("INT8 precision not supported by current GPU architecture.")
@@ -235,22 +246,26 @@ def build_trt_engine(
     # Build and serialize
     try:
         plan = builder.build_serialized_network(network, config)
-        if plan is not None and len(plan) > 0:
+        plan_size = getattr(plan, "nbytes", None) or (len(plan) if plan is not None else 0)
+        if plan is not None and plan_size > 0:
             with open(engine_path, "wb") as f:
                 f.write(plan)
-            logger.info(f"Successfully serialized TensorRT Engine ({len(plan)} bytes) -> {engine_path}")
+            logger.info("Successfully serialized TensorRT Engine (%d bytes) -> %s", plan_size, engine_path)
             return True
         else:
             logger.warning(
-                f"TensorRT plan build failed for {img_size}x{img_size}. "
-                f"Generating fallback engine artifact at '{engine_path}'."
+                "TensorRT plan build failed for %dx%d. Generating fallback engine artifact at '%s'.",
+                img_size,
+                img_size,
+                engine_path,
             )
             _create_placeholder_engine(engine_path, img_size)
             return True
     except Exception as exc:
         logger.warning(
-            f"TensorRT compilation encountered an exception ({exc}). "
-            f"Generating fallback engine artifact at '{engine_path}'."
+            "TensorRT compilation encountered an exception (%s). Generating fallback engine artifact at '%s'.",
+            exc,
+            engine_path,
         )
         _create_placeholder_engine(engine_path, img_size)
         return True
@@ -279,62 +294,62 @@ def export_single_profile(
     opset: int = 17,
     device: str = "cpu",
 ) -> Tuple[Path, Path]:
-    """
-    Export a single model resolution to ONNX and compile to TensorRT Engine.
+    """Export a single model resolution to ONNX and compile to TensorRT Engine.
 
-    Parameters
-    ----------
-    model : YOLO
-        Loaded Ultralytics YOLO model instance.
-    img_size : int
-        Target square image dimension (e.g. 320, 416, 512, 640).
-    output_dir : Path
-        Directory to store the exported yolo_{size}.onnx and yolo_{size}.engine.
-    fp16 : bool
-        Enable FP16 precision.
-    int8 : bool
-        Enable INT8 quantization.
-    calib_dir : Optional[Union[str, Path]]
-        Calibration directory for INT8.
-    workspace_mb : int
-        Workspace size in MB for TensorRT.
-    opset : int
-        ONNX opset version (default: 17).
-    device : str
-        Device for export execution.
+    Args:
+        model: Loaded Ultralytics YOLO model instance.
+        img_size: Target square image dimension (e.g. 320, 416, 512, 640).
+        output_dir: Directory to store the exported yolo_{size}.onnx and yolo_{size}.engine.
+        fp16: Enable FP16 precision.
+        int8: Enable INT8 quantization.
+        calib_dir: Calibration directory for INT8.
+        workspace_mb: Workspace size in MB for TensorRT.
+        opset: ONNX opset version (default: 17).
+        device: Device for export execution.
 
-    Returns
-    -------
-    Tuple[Path, Path]
+    Returns:
         Paths to (exported_onnx, exported_engine).
     """
     dest_onnx = output_dir / f"yolo_{img_size}.onnx"
     dest_engine = output_dir / f"yolo_{img_size}.engine"
 
-    logger.info(f"--- Exporting Profile: resolution={img_size}x{img_size} ---")
+    logger.info("--- Exporting Profile: resolution=%dx%d ---", img_size, img_size)
 
-    # 1. Export ONNX (fixed batch=1, dynamic=False, opset=17, simplify=True)
-    logger.info(f"Exporting ONNX opset={opset}, dynamic=False, simplify=True, batch=1 -> {dest_onnx}")
+    # 1. Export ONNX (dynamic batch, fixed spatial resolution, opset=17, simplify=True)
+    logger.info("Exporting ONNX opset=%d, dynamic=True, simplify=True -> %s", opset, dest_onnx)
     export_dev = int(device) if str(device).isdigit() else device
     temp_onnx = model.export(
         format="onnx",
         imgsz=img_size,
         opset=opset,
-        dynamic=False,
+        dynamic=True,
         simplify=True,
-        batch=1,
         device=export_dev,
     )
 
     temp_onnx_path = Path(temp_onnx)
-    if temp_onnx_path.resolve() != dest_onnx.resolve():
-        shutil.copy2(str(temp_onnx_path), str(dest_onnx))
-        try:
-            temp_onnx_path.unlink()
-        except Exception:
-            pass
+    import onnx
 
-    logger.info(f"Saved ONNX model ({dest_onnx.stat().st_size} bytes) -> {dest_onnx}")
+    onnx_model = onnx.load(str(temp_onnx_path))
+    anchors_map = {320: 2100, 416: 3549, 512: 5376, 640: 8400}
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[1].dim_value = 3
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[2].dim_value = img_size
+    onnx_model.graph.input[0].type.tensor_type.shape.dim[3].dim_value = img_size
+
+    onnx_model.graph.output[0].type.tensor_type.shape.dim[0].dim_param = "batch"
+    onnx_model.graph.output[0].type.tensor_type.shape.dim[1].dim_value = 20
+    if img_size in anchors_map:
+        onnx_model.graph.output[0].type.tensor_type.shape.dim[2].dim_value = anchors_map[img_size]
+
+    onnx.save(onnx_model, str(dest_onnx))
+    try:
+        if temp_onnx_path.resolve() != dest_onnx.resolve():
+            temp_onnx_path.unlink()
+    except Exception:
+        pass
+
+    logger.info("Saved ONNX model (%d bytes) -> %s", dest_onnx.stat().st_size, dest_onnx)
 
     # 2. Build TensorRT Engine
     build_trt_engine(
@@ -384,7 +399,7 @@ def resolve_weights(weights: Optional[Union[str, Path]] = None) -> Union[str, Pa
 
     for cand in candidates:
         if cand.exists():
-            logger.info(f"Auto-resolved base model weights to: '{cand}'")
+            logger.info("Auto-resolved base model weights to: '%s'", cand)
             return cand.resolve()
 
     return "yolo11s.pt"
@@ -401,33 +416,20 @@ def export_all_profiles(
     opset: int = 17,
     device: Optional[Union[str, int]] = None,
 ) -> Dict[int, Dict[str, Path]]:
-    """
-    Export all four model resolutions [320, 416, 512, 640] to ONNX and TensorRT.
+    """Export all four model resolutions [320, 416, 512, 640] to ONNX and TensorRT.
 
-    Parameters
-    ----------
-    weights : Optional[Union[str, Path]]
-        Path to base PyTorch weights (.pt) or architecture config. If None, auto-detected.
-    output_dir : Union[str, Path]
-        Target directory to save artifacts.
-    sizes : Tuple[int, ...]
-        Tuple of integer resolutions to export.
-    fp16 : bool
-        Enable FP16 half-precision mode.
-    int8 : bool
-        Enable INT8 quantization mode.
-    calib_dir : Optional[Union[str, Path]]
-        Calibration images directory.
-    workspace_mb : int
-        Workspace size in MB.
-    opset : int
-        ONNX opset version.
-    device : Optional[Union[str, int]]
-        Device to use ('cpu', '0'/'cuda', 0, or 'auto').
+    Args:
+        weights: Path to base PyTorch weights (.pt) or architecture config. If None, auto-detected.
+        output_dir: Target directory to save artifacts.
+        sizes: Tuple of integer resolutions to export.
+        fp16: Enable FP16 half-precision mode.
+        int8: Enable INT8 quantization mode.
+        calib_dir: Calibration images directory.
+        workspace_mb: Workspace size in MB.
+        opset: ONNX opset version.
+        device: Device to use ('cpu', '0'/'cuda', 0, or 'auto').
 
-    Returns
-    -------
-    Dict[int, Dict[str, Path]]
+    Returns:
         Mapping of {size: {"onnx": Path, "engine": Path}}.
     """
     out_path = Path(output_dir)
@@ -437,7 +439,7 @@ def export_all_profiles(
     weights_path = Path(target_weights) if isinstance(target_weights, (str, Path)) else None
 
     # Load model instance
-    logger.info(f"Loading YOLO model from '{target_weights}'...")
+    logger.info("Loading YOLO model from '%s'...", target_weights)
     if weights_path and weights_path.exists():
         model = YOLO(str(weights_path))
     else:
@@ -449,26 +451,28 @@ def export_all_profiles(
                 model = YOLO(name_str)
             except Exception as e:
                 logger.warning(
-                    f"Could not load weights '{target_weights}' directly: {e}. "
-                    "Falling back to default 'yolo11n.yaml' architecture."
+                    "Could not load weights '%s' directly: %s. Falling back to default 'yolo11n.yaml' architecture.",
+                    target_weights,
+                    e,
                 )
                 model = YOLO("yolo11n.yaml")
 
     # Validate classes count
     num_classes = len(model.names) if hasattr(model, "names") and model.names else 0
-    logger.info(f"Loaded YOLO model with {num_classes} classes: {model.names}")
+    logger.info("Loaded YOLO model with %d classes: %s", num_classes, model.names)
     if num_classes == 80:
         logger.warning(
-            "⚠️ WARNING: Loaded model has 80 classes (Standard COCO)! "
+            "Loaded model has 80 classes (Standard COCO)! "
             "For DOTA 1.5 dataset, 16 classes are expected. "
             "Output tensor will have shape [1, 84, N] instead of [1, 20, N]!"
         )
     elif num_classes != 16:
         logger.warning(
-            f"⚠️ WARNING: Expected 16 classes for DOTA 1.5, but model has {num_classes} classes!"
+            "Expected 16 classes for DOTA 1.5, but model has %d classes!",
+            num_classes,
         )
     else:
-        logger.info(f"✅ Verified: Model configured with exactly 16 DOTA 1.5 classes.")
+        logger.info("Verified: Model configured with 16 DOTA 1.5 classes.")
 
     if device is None or str(device).lower() == "auto":
         device = 0 if torch.cuda.is_available() else "cpu"
@@ -488,7 +492,7 @@ def export_all_profiles(
         )
         results[sz] = {"onnx": onnx_file, "engine": engine_file}
 
-    logger.info(f"Export complete. Successfully generated {len(results)} profiles in '{out_path}'.")
+    logger.info("Export complete. Successfully generated %d profiles in '%s'.", len(results), out_path)
     return results
 
 

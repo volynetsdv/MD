@@ -1,9 +1,14 @@
+/**
+ * @file test_cuda_slicer.cpp
+ * @brief Unit tests for GPU-based tile extraction and bilinear resizing (cuda_slicer).
+ */
+
 #include "cuda_slicer.cuh"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
 
 // ---------------------------------------------------------------------------
 // Helper: fill a GPU BGR image with a deterministic diagonal gradient so we

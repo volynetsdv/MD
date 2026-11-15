@@ -70,6 +70,25 @@ if __name__ == "__main__":
     assert abs(res_nms[0].h - 150.0) <= 0.01
     assert abs(res_nms[0].conf - 0.92) <= 0.001
 
+    # Acceptance Criteria: Zero-Copy CUDA Slicing if CUDA available
+    if getattr(pytiling_core, "HAVE_CUDA", False):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                img = torch.randint(0, 256, (1000, 1000, 3), dtype=torch.uint8, device="cuda")
+                rects = [pytiling_core.Rect(0, 0, 500, 500), pytiling_core.Rect(100, 100, 400, 400)]
+                dst = torch.empty((len(rects), 3, 640, 640), dtype=torch.float32, device="cuda")
+                err = pytiling_core.extract_batch_tiles_gpu(
+                    img.data_ptr(), 1000 * 3, 1000, 1000,
+                    rects, 640, dst.data_ptr(), True, 0
+                )
+                assert err == 0
+                assert dst.shape == (2, 3, 640, 640)
+                assert 0.0 <= dst.min().item() <= dst.max().item() <= 1.0
+                print("CUDA zero-copy slicing verified in test_binding.py")
+        except ImportError:
+            pass
+
     print("test_binding.py passed successfully!")
 
 

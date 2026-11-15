@@ -1,3 +1,8 @@
+/**
+ * @file test_tiling_math.cpp
+ * @brief Unit tests for dynamic hardware-aware tiling calculation (tiling_math).
+ */
+
 #include "tiling_math.hpp"
 
 #include <cassert>

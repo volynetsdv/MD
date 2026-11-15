@@ -1,3 +1,8 @@
+/**
+ * @file postprocess.cpp
+ * @brief Implementation of coordinate remapping, spatial overlap metrics, Cluster-DIoU-NMS, and JSON export.
+ */
+
 #include "postprocess.hpp"
 
 #include <algorithm>
@@ -10,6 +15,9 @@
 namespace
 {
 
+    /**
+     * @brief Axis-aligned intersection rectangle representing the overlap seam between two tiles.
+     */
     struct OverlapRect
     {
         float x1;
@@ -20,6 +28,9 @@ namespace
         int tile2;
     };
 
+    /**
+     * @brief Check whether a global detection bounding box intersects a tile overlap region.
+     */
     bool box_intersects_region(const GlobalDetection &box, const OverlapRect &r)
     {
         float bx1 = box.x;
@@ -97,6 +108,102 @@ namespace
             tiles.push_back({r.x, r.y, r.w, r.h});
         }
         return tiles;
+    }
+
+    struct TileSafeZone
+    {
+        float x1{-1e9f};
+        float y1{-1e9f};
+        float x2{1e9f};
+        float y2{1e9f};
+        bool has_overlap{false};
+    };
+
+    std::vector<TileSafeZone> compute_tile_safe_zones(const std::vector<TileRect> &tiles,
+                                                      const std::vector<OverlapRect> &overlaps,
+                                                      const std::vector<std::vector<size_t>> &tile_to_overlap)
+    {
+        const size_t n = tiles.size();
+        std::vector<TileSafeZone> safe_zones(n);
+
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (i >= tile_to_overlap.size() || tile_to_overlap[i].empty())
+            {
+                safe_zones[i].has_overlap = false;
+                continue;
+            }
+
+            safe_zones[i].has_overlap = true;
+            const float t_x1 = static_cast<float>(tiles[i].x);
+            const float t_y1 = static_cast<float>(tiles[i].y);
+            const float t_x2 = static_cast<float>(tiles[i].x + tiles[i].w);
+            const float t_y2 = static_cast<float>(tiles[i].y + tiles[i].h);
+
+            float s_x1 = -1e9f;
+            float s_y1 = -1e9f;
+            float s_x2 = 1e9f;
+            float s_y2 = 1e9f;
+
+            for (size_t r_idx : tile_to_overlap[i])
+            {
+                const auto &r = overlaps[r_idx];
+                const float delta_x = (r.x2 - r.x1) * 0.5f;
+                const float delta_y = (r.y2 - r.y1) * 0.5f;
+
+                // Right seam of tile i: neighbor is to the right
+                if (std::fabs(r.x2 - t_x2) < 1.0f)
+                {
+                    s_x2 = std::min(s_x2, r.x1 - delta_x);
+                }
+                // Left seam of tile i: neighbor is to the left
+                if (std::fabs(r.x1 - t_x1) < 1.0f)
+                {
+                    s_x1 = std::max(s_x1, r.x2 + delta_x);
+                }
+                // Bottom seam of tile i: neighbor is below
+                if (std::fabs(r.y2 - t_y2) < 1.0f)
+                {
+                    s_y2 = std::min(s_y2, r.y1 - delta_y);
+                }
+                // Top seam of tile i: neighbor is above
+                if (std::fabs(r.y1 - t_y1) < 1.0f)
+                {
+                    s_y1 = std::max(s_y1, r.y2 + delta_y);
+                }
+            }
+
+            safe_zones[i].x1 = s_x1;
+            safe_zones[i].y1 = s_y1;
+            safe_zones[i].x2 = s_x2;
+            safe_zones[i].y2 = s_y2;
+        }
+
+        return safe_zones;
+    }
+
+    bool is_box_border(const GlobalDetection &box, const std::vector<TileSafeZone> &safe_zones)
+    {
+        if (safe_zones.empty() || box.tile_id < 0 || static_cast<size_t>(box.tile_id) >= safe_zones.size())
+        {
+            return true;
+        }
+        const auto &sz = safe_zones[box.tile_id];
+        if (!sz.has_overlap)
+        {
+            return false;
+        }
+        const float bx1 = box.x;
+        const float by1 = box.y;
+        const float bx2 = box.x + box.w;
+        const float by2 = box.y + box.h;
+
+        // Interior check: strictly inside safe zone
+        if (bx1 > sz.x1 && bx2 < sz.x2 && by1 > sz.y1 && by2 < sz.y2)
+        {
+            return false; // B_interior
+        }
+        return true; // is_border = true
     }
 
 } // namespace
@@ -273,12 +380,14 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
         return {};
     }
 
-    // 2. Precompute tile overlap zones if tiles are provided
+    // 2. Precompute tile overlap zones and interior safe zones if tiles are provided
     std::vector<OverlapRect> overlap_regions;
     std::vector<std::vector<size_t>> tile_to_overlap;
+    std::vector<TileSafeZone> safe_zones;
     if (!tiles.empty())
     {
         overlap_regions = compute_overlap_regions(tiles, &tile_to_overlap);
+        safe_zones = compute_tile_safe_zones(tiles, overlap_regions, tile_to_overlap);
     }
 
     // 3. Group by class
@@ -295,181 +404,130 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
 
     for (int cls : classes)
     {
-        std::vector<GlobalDetection> cls_boxes;
+        // Step 1: AABB-based Boundary Isolation
+        // Segregate candidate detections into interior boxes (B_interior) and border candidates
+        std::vector<GlobalDetection> border_boxes;
         for (const auto &d : candidates)
         {
-            if (d.class_id == cls)
+            if (d.class_id != cls)
+                continue;
+
+            if (is_box_border(d, safe_zones))
             {
-                cls_boxes.push_back(d);
+                border_boxes.push_back(d);
+            }
+            else
+            {
+                // Box completely within tile interior safe zone: preserve without building pairs
+                result.push_back(d);
             }
         }
 
-        // --- Containment / IoS Suppression (Intersection over Smaller >= 0.88f) ---
-        // Suppresses nested/fragment boundary duplicates of the same object.
-        const size_t n_cls = cls_boxes.size();
-        if (n_cls > 1)
+        const size_t num_border = border_boxes.size();
+        if (num_border == 0)
         {
-            std::vector<uint8_t> ios_suppressed(n_cls, 0);
-
-            for (size_t i = 0; i < n_cls; ++i)
-            {
-                if (ios_suppressed[i])
-                    continue;
-
-                const float area_i = cls_boxes[i].w * cls_boxes[i].h;
-                if (area_i <= 1e-7f)
-                {
-                    ios_suppressed[i] = 1;
-                    continue;
-                }
-
-                for (size_t j = i + 1; j < n_cls; ++j)
-                {
-                    if (ios_suppressed[j])
-                        continue;
-
-                    const float area_j = cls_boxes[j].w * cls_boxes[j].h;
-                    if (area_j <= 1e-7f)
-                    {
-                        ios_suppressed[j] = 1;
-                        continue;
-                    }
-
-                    const float containment = calculate_containment(cls_boxes[i], cls_boxes[j]);
-                    const float min_area = std::min(area_i, area_j);
-                    const float max_area = std::max(area_i, area_j);
-
-                    // A box is considered a nested edge fragment if it is contained within the larger box
-                    // (containment >= 0.88f) and has a substantially smaller area (min_area <= 0.80f * max_area).
-                    // Comparable full detections across tile seams are preserved for DIoU weighted coordinate averaging.
-                    if (containment >= 0.88f && min_area <= 0.80f * max_area)
-                    {
-                        if (area_i < area_j)
-                        {
-                            // Box i is smaller -> suppress i, larger box j absorbs confidence
-                            cls_boxes[j].conf = std::max(cls_boxes[j].conf, cls_boxes[i].conf);
-                            ios_suppressed[i] = 1;
-                            break; // i is suppressed, continue to next i
-                        }
-                        else
-                        {
-                            // Box j is smaller -> suppress j, larger box i absorbs confidence
-                            cls_boxes[i].conf = std::max(cls_boxes[i].conf, cls_boxes[j].conf);
-                            ios_suppressed[j] = 1;
-                        }
-                    }
-                }
-            }
-
-            std::vector<GlobalDetection> active_boxes;
-            active_boxes.reserve(n_cls);
-            for (size_t k = 0; k < n_cls; ++k)
-            {
-                if (!ios_suppressed[k])
-                {
-                    active_boxes.push_back(cls_boxes[k]);
-                }
-            }
-            cls_boxes = std::move(active_boxes);
+            continue;
         }
-
-        // Sort descending by confidence
-        std::sort(cls_boxes.begin(), cls_boxes.end(), [](const GlobalDetection &a, const GlobalDetection &b)
-                  { return a.conf > b.conf; });
-
-        const size_t num_boxes = cls_boxes.size();
-        if (num_boxes == 1)
+        if (num_border == 1)
         {
-            result.push_back(cls_boxes[0]);
+            result.push_back(border_boxes[0]);
             continue;
         }
 
-        // Determine which boxes lie on an overlap boundary
-        std::vector<uint8_t> on_boundary(num_boxes, 0);
-        std::vector<size_t> boundary_indices;
-        boundary_indices.reserve(num_boxes);
+        // Step 2: Sweep-and-Prune on border candidates
+        std::sort(border_boxes.begin(), border_boxes.end(),
+                  [](const GlobalDetection &a, const GlobalDetection &b)
+                  { return a.x < b.x; });
 
-        if (!overlap_regions.empty())
+        std::vector<std::vector<size_t>> adj(num_border);
+
+        for (size_t i = 0; i < num_border; ++i)
         {
-            for (size_t i = 0; i < num_boxes; ++i)
+            const auto &box_a = border_boxes[i];
+            const float a_x1 = box_a.x;
+            const float a_x2 = box_a.x + box_a.w;
+            const float a_y1 = box_a.y;
+            const float a_y2 = box_a.y + box_a.h;
+            const float area_a = box_a.w * box_a.h;
+
+            for (size_t j = i + 1; j < num_border; ++j)
             {
-                if (is_box_in_overlap(cls_boxes[i], overlap_regions, tile_to_overlap))
+                const auto &box_b = border_boxes[j];
+
+                // 1. Sweep-and-prune: early break on X-axis separation
+                if (box_b.x >= a_x2)
                 {
-                    on_boundary[i] = 1;
-                    boundary_indices.push_back(i);
+                    break;
                 }
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < num_boxes; ++i)
-            {
-                on_boundary[i] = 1;
-                boundary_indices.push_back(i);
-            }
-        }
 
-        std::vector<std::vector<size_t>> adj(num_boxes);
-
-        if (boundary_indices.size() > 1)
-        {
-            // Sort boundary candidates by X coordinate for Sweep-and-Prune
-            std::vector<size_t> sorted_by_x = boundary_indices;
-            std::sort(sorted_by_x.begin(), sorted_by_x.end(),
-                      [&cls_boxes](size_t a, size_t b)
-                      { return cls_boxes[a].x < cls_boxes[b].x; });
-
-            const size_t num_boundary = sorted_by_x.size();
-            for (size_t k1 = 0; k1 < num_boundary; ++k1)
-            {
-                size_t i = sorted_by_x[k1];
-                const auto &bi = cls_boxes[i];
-                float bi_x2 = bi.x + bi.w;
-                float bi_y1 = bi.y;
-                float bi_y2 = bi.y + bi.h;
-
-                for (size_t k2 = k1 + 1; k2 < num_boundary; ++k2)
+                // 2. Boxes originating from the same tile are never merged
+                if (box_a.tile_id >= 0 && box_b.tile_id >= 0 && box_a.tile_id == box_b.tile_id)
                 {
-                    size_t j = sorted_by_x[k2];
-                    const auto &bj = cls_boxes[j];
+                    continue;
+                }
 
-                    // Sweep-and-prune: if bj starts after bi ends, no overlap can ever occur
-                    if (diou_threshold > 0.0f && bj.x >= bi_x2)
+                const float b_y1 = box_b.y;
+                const float b_y2 = box_b.y + box_b.h;
+
+                // 3. Fast 1D Y-axis overlap check
+                if (b_y2 <= a_y1 || b_y1 >= a_y2)
+                {
+                    continue;
+                }
+
+                // 4. Quick intersection area calculation (Step 2.1)
+                const float inter_w = std::min(a_x2, box_b.x + box_b.w) - std::max(a_x1, box_b.x);
+                const float inter_h = std::min(a_y2, b_y2) - std::max(a_y1, b_y1);
+                if (inter_w <= 0.0f || inter_h <= 0.0f)
+                {
+                    continue;
+                }
+                const float inter_area = inter_w * inter_h;
+
+                const float area_b = box_b.w * box_b.h;
+                const float min_area = std::min(area_a, area_b);
+                if (min_area <= 1e-7f)
+                {
+                    continue;
+                }
+
+                const float containment = inter_area / min_area;
+                bool is_duplicate = false;
+
+                // Step 2.2: Fast Cross-Tile Containment (containment >= 0.72)
+                if (containment >= 0.72f)
+                {
+                    is_duplicate = true;
+                }
+                // Step 2.3: Asymmetric weak cut-off part suppression (containment >= 0.50 & conf_weak <= 0.55 * conf_strong)
+                else if (containment >= 0.50f)
+                {
+                    const float conf_weak = std::min(box_a.conf, box_b.conf);
+                    const float conf_strong = std::max(box_a.conf, box_b.conf);
+                    if (conf_weak <= 0.55f * conf_strong)
                     {
-                        break;
+                        is_duplicate = true;
                     }
+                }
 
-                    // Boxes originating from the same tile are never merged
-                    if (bi.tile_id >= 0 && bj.tile_id >= 0 && bi.tile_id == bj.tile_id)
-                    {
-                        continue;
-                    }
-
-                    // Check Y-axis bounding box overlap before computing DIoU
-                    if (diou_threshold > 0.0f)
-                    {
-                        if (bj.y + bj.h <= bi_y1 || bj.y >= bi_y2)
-                        {
-                            continue;
-                        }
-                    }
-
-                    float diou = calculate_diou(bi, bj);
-
-                    // Adaptive threshold for seam objects based on center distance
+                // Step 2 criterion fallback: DIoU threshold for overlapping full targets across seams
+                if (!is_duplicate && diou_threshold > 0.0f)
+                {
+                    const float diou = calculate_diou(box_a, box_b);
                     float eff_thresh = diou_threshold;
-                    if (bi.tile_id >= 0 && bj.tile_id >= 0 && bi.tile_id != bj.tile_id)
+
+                    if (box_a.tile_id >= 0 && box_b.tile_id >= 0 && box_a.tile_id != box_b.tile_id)
                     {
-                        const float c_ax = bi.x + bi.w * 0.5f;
-                        const float c_ay = bi.y + bi.h * 0.5f;
-                        const float c_bx = bj.x + bj.w * 0.5f;
-                        const float c_by = bj.y + bj.h * 0.5f;
+                        const float c_ax = a_x1 + box_a.w * 0.5f;
+                        const float c_ay = a_y1 + box_a.h * 0.5f;
+                        const float c_bx = box_b.x + box_b.w * 0.5f;
+                        const float c_by = b_y1 + box_b.h * 0.5f;
                         const float d2 = (c_ax - c_bx) * (c_ax - c_bx) + (c_ay - c_by) * (c_ay - c_by);
 
-                        const float enc_x1 = std::min(bi.x, bj.x);
-                        const float enc_y1 = std::min(bi.y, bj.y);
-                        const float enc_x2 = std::max(bi.x + bi.w, bj.x + bj.w);
-                        const float enc_y2 = std::max(bi.y + bi.h, bj.y + bj.h);
+                        const float enc_x1 = std::min(a_x1, box_b.x);
+                        const float enc_y1 = std::min(a_y1, b_y1);
+                        const float enc_x2 = std::max(a_x2, box_b.x + box_b.w);
+                        const float enc_y2 = std::max(a_y2, b_y2);
                         const float c2 = (enc_x2 - enc_x1) * (enc_x2 - enc_x1) + (enc_y2 - enc_y1) * (enc_y2 - enc_y1);
 
                         if (c2 > 1e-7f)
@@ -481,26 +539,30 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
 
                     if (diou >= eff_thresh)
                     {
-                        adj[i].push_back(j);
-                        adj[j].push_back(i);
+                        is_duplicate = true;
                     }
+                }
+
+                if (is_duplicate)
+                {
+                    adj[i].push_back(j);
+                    adj[j].push_back(i);
                 }
             }
         }
 
         // Find connected components (clusters)
-        std::vector<bool> visited(num_boxes, false);
+        std::vector<bool> visited(num_border, false);
 
-        for (size_t i = 0; i < num_boxes; ++i)
+        for (size_t i = 0; i < num_border; ++i)
         {
             if (visited[i])
                 continue;
 
-            // If box is not on boundary or has no neighbors, it cannot merge with anything
-            if (!on_boundary[i] || adj[i].empty())
+            if (adj[i].empty())
             {
                 visited[i] = true;
-                result.push_back(cls_boxes[i]);
+                result.push_back(border_boxes[i]);
                 continue;
             }
 
@@ -527,51 +589,35 @@ std::vector<GlobalDetection> cluster_diou_nms(const std::vector<GlobalDetection>
 
             if (cluster_indices.size() == 1)
             {
-                result.push_back(cls_boxes[cluster_indices[0]]);
+                result.push_back(border_boxes[cluster_indices[0]]);
             }
             else
             {
-                // Confidence-weighted merge
-                float total_weight = 0.0f;
-                float sum_x = 0.0f;
-                float sum_y = 0.0f;
-                float sum_w = 0.0f;
-                float sum_h = 0.0f;
-                float max_conf = 0.0f;
+                // Step 3: Envelope Union to reconstruct full target dimensions across seams
+                float min_x = border_boxes[cluster_indices[0]].x;
+                float min_y = border_boxes[cluster_indices[0]].y;
+                float max_x = min_x + border_boxes[cluster_indices[0]].w;
+                float max_y = min_y + border_boxes[cluster_indices[0]].h;
+                float max_conf = border_boxes[cluster_indices[0]].conf;
 
                 for (size_t idx : cluster_indices)
                 {
-                    const auto &b = cls_boxes[idx];
-                    float w = b.conf;
-                    total_weight += w;
-                    sum_x += b.x * w;
-                    sum_y += b.y * w;
-                    sum_w += b.w * w;
-                    sum_h += b.h * w;
-                    if (b.conf > max_conf)
-                    {
-                        max_conf = b.conf;
-                    }
+                    const auto &b = border_boxes[idx];
+                    min_x = std::min(min_x, b.x);
+                    min_y = std::min(min_y, b.y);
+                    max_x = std::max(max_x, b.x + b.w);
+                    max_y = std::max(max_y, b.y + b.h);
+                    max_conf = std::max(max_conf, b.conf);
                 }
 
                 GlobalDetection merged;
-                if (total_weight > 0.0f)
-                {
-                    merged.x = sum_x / total_weight;
-                    merged.y = sum_y / total_weight;
-                    merged.w = sum_w / total_weight;
-                    merged.h = sum_h / total_weight;
-                }
-                else
-                {
-                    merged.x = cls_boxes[cluster_indices[0]].x;
-                    merged.y = cls_boxes[cluster_indices[0]].y;
-                    merged.w = cls_boxes[cluster_indices[0]].w;
-                    merged.h = cls_boxes[cluster_indices[0]].h;
-                }
+                merged.x = min_x;
+                merged.y = min_y;
+                merged.w = max_x - min_x;
+                merged.h = max_y - min_y;
                 merged.conf = max_conf;
                 merged.class_id = cls;
-                merged.tile_id = -1; // Unified across tiles
+                merged.tile_id = -1; // Unified across seams
                 result.push_back(merged);
             }
         }

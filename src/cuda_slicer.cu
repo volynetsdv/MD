@@ -1,44 +1,73 @@
+/**
+ * @file cuda_slicer.cu
+ * @brief CUDA kernel and host wrappers for zero-copy tile extraction, bilinear resizing, and normalization.
+ */
+
 #include "cuda_slicer.cuh"
 
 #include <cmath>
 
-namespace {
+namespace
+{
 
-// ---------------------------------------------------------------------------
-// Kernel: one thread → one output pixel (ox, oy) for all 3 channels.
-// Performs bilinear interpolation from the source tile region and writes
-// normalised float values into a [3][target][target] tensor.
-// ---------------------------------------------------------------------------
-__global__ void extract_tile_kernel(
-    const uint8_t* __restrict__ d_src,
-    int src_stride_bytes,
-    int rect_x, int rect_y, int rect_w, int rect_h,
-    int target_size,
-    float* __restrict__ d_dst)          // layout: [3][target_size][target_size]
+    constexpr int kBlockX = 32;
+    constexpr int kBlockY = 8;
+    constexpr int kMaxBatchSize = 64;
+
+    __constant__ TileRect c_batch_rects[kMaxBatchSize];
+
+    /**
+     * @brief CUDA 3D grid kernel for batched bilinear tile extraction, optional BGR-to-RGB conversion,
+     *        and [0, 1] float32 NCHW normalization.
+     *
+     * @param d_src            Device pointer to source BGR image (uint8).
+     * @param src_stride_bytes Row stride of the source image in bytes.
+     * @param src_w            Source image width in pixels.
+     * @param src_h            Source image height in pixels.
+     * @param batch_size       Number of tiles in the current batch.
+     * @param target_size      Output spatial resolution per tile.
+     * @param bgr_to_rgb       Whether to swap B and R channels during extraction.
+     * @param d_dst            Device pointer to destination NCHW float32 batch tensor.
+     */
+    __global__ void extract_batch_tiles_kernel(
+        const uint8_t *__restrict__ d_src,
+        int src_stride_bytes,
+        int src_w, int src_h,
+        int batch_size,
+        int target_size,
+        bool bgr_to_rgb,
+        float *__restrict__ d_dst)
 {
     const int ox = blockIdx.x * blockDim.x + threadIdx.x;
     const int oy = blockIdx.y * blockDim.y + threadIdx.y;
+    const int b  = blockIdx.z;
 
-    if (ox >= target_size || oy >= target_size) return;
+    if (ox >= target_size || oy >= target_size || b >= batch_size) return;
 
-    // Map output pixel centre → source tile coordinates (float for bilinear).
-    const float scale_x = static_cast<float>(rect_w) / static_cast<float>(target_size);
-    const float scale_y = static_cast<float>(rect_h) / static_cast<float>(target_size);
+    TileRect rect = c_batch_rects[b];
 
-    const float fx = rect_x + (static_cast<float>(ox) + 0.5f) * scale_x;
-    const float fy = rect_y + (static_cast<float>(oy) + 0.5f) * scale_y;
+    // Map output pixel centre -> source tile coordinates (OpenCV INTER_LINEAR align_corners=False).
+    const float scale_x = static_cast<float>(rect.w) / static_cast<float>(target_size);
+    const float scale_y = static_cast<float>(rect.h) / static_cast<float>(target_size);
 
-    // Neighbouring integer pixels (clamped to valid tile bounds).
+    const float fx = rect.x + (static_cast<float>(ox) + 0.5f) * scale_x - 0.5f;
+    const float fy = rect.y + (static_cast<float>(oy) + 0.5f) * scale_y - 0.5f;
+
     int x0 = static_cast<int>(std::floor(fx));
     int y0 = static_cast<int>(std::floor(fy));
     int x1 = x0 + 1;
     int y1 = y0 + 1;
 
     // Clamp to image / tile boundaries.
-    if (x0 < rect_x) x0 = rect_x;
-    if (y0 < rect_y) y0 = rect_y;
-    if (x1 > rect_x + rect_w - 1) x1 = rect_x + rect_w - 1;
-    if (y1 > rect_y + rect_h - 1) y1 = rect_y + rect_h - 1;
+    if (x0 < rect.x) x0 = rect.x;
+    if (y0 < rect.y) y0 = rect.y;
+    if (x1 > rect.x + rect.w - 1) x1 = rect.x + rect.w - 1;
+    if (y1 > rect.y + rect.h - 1) y1 = rect.y + rect.h - 1;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= src_w) x1 = src_w - 1;
+    if (y1 >= src_h) y1 = src_h - 1;
 
     const float alpha = fx - static_cast<float>(x0);
     const float beta  = fy - static_cast<float>(y0);
@@ -49,32 +78,34 @@ __global__ void extract_tile_kernel(
     const float w01 = (1.0f - alpha) * beta;
     const float w11 = alpha           * beta;
 
-    // Pointer offsets for the four corners (BGR interleaved).
+    // Pointer offsets for the four corners.
     const uint8_t* p00 = d_src + y0 * src_stride_bytes + x0 * 3;
     const uint8_t* p10 = d_src + y0 * src_stride_bytes + x1 * 3;
     const uint8_t* p01 = d_src + y1 * src_stride_bytes + x0 * 3;
     const uint8_t* p11 = d_src + y1 * src_stride_bytes + x1 * 3;
 
+    const size_t plane_size = static_cast<size_t>(target_size) * target_size;
+    float* batch_dst = d_dst + static_cast<size_t>(b) * 3 * plane_size;
+    const size_t pixel_offset = static_cast<size_t>(oy) * target_size + ox;
+
     for (int c = 0; c < 3; ++c) {
-        float v00 = static_cast<float>(p00[c]);
-        float v10 = static_cast<float>(p10[c]);
-        float v01 = static_cast<float>(p01[c]);
-        float v11 = static_cast<float>(p11[c]);
+        int src_c = bgr_to_rgb ? (2 - c) : c;
+        float v00 = static_cast<float>(p00[src_c]);
+        float v10 = static_cast<float>(p10[src_c]);
+        float v01 = static_cast<float>(p01[src_c]);
+        float v11 = static_cast<float>(p11[src_c]);
 
         float val = w00 * v00 + w10 * v10 + w01 * v01 + w11 * v11;
 
-        // Normalise to [0, 1] and write into channel-plane layout.
-        d_dst[c * target_size * target_size + oy * target_size + ox] = val / 255.0f;
+        // Normalise to [0, 1] and write into planar CHW layout.
+        batch_dst[c * plane_size + pixel_offset] = val / 255.0f;
     }
 }
-
-constexpr int kBlockX = 32;
-constexpr int kBlockY = 8;
 
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Host wrapper — launches the kernel, no host↔device transfers.
+// Host wrappers
 // ---------------------------------------------------------------------------
 cudaError_t extract_tile_gpu(const uint8_t* d_src_img,
                              int src_stride_bytes,
@@ -82,26 +113,49 @@ cudaError_t extract_tile_gpu(const uint8_t* d_src_img,
                              int src_h,
                              const TileRect& rect,
                              int model_target_size,
-                             float* d_dst_tensor)
+                             float* d_dst_tensor,
+                             bool bgr_to_rgb,
+                             cudaStream_t stream)
 {
-    if (!d_src_img || !d_dst_tensor) return cudaErrorInvalidValue;
-    if (model_target_size <= 0)     return cudaErrorInvalidValue;
+    return extract_batch_tiles_gpu(d_src_img, src_stride_bytes, src_w, src_h,
+                                   &rect, 1, model_target_size, d_dst_tensor,
+                                   bgr_to_rgb, stream);
+}
 
-    // Validate that the tile fits inside the source image.
-    if (rect.x < 0 || rect.y < 0 ||
-        rect.x + rect.w > src_w || rect.y + rect.h > src_h) {
-        return cudaErrorInvalidValue;
+cudaError_t extract_batch_tiles_gpu(const uint8_t* d_src_img,
+                                   int src_stride_bytes,
+                                   int src_w,
+                                   int src_h,
+                                   const TileRect* rects,
+                                   int batch_size,
+                                   int model_target_size,
+                                   float* d_dst_batch_tensor,
+                                   bool bgr_to_rgb,
+                                   cudaStream_t stream)
+{
+    if (!d_src_img || !d_dst_batch_tensor || !rects) return cudaErrorInvalidValue;
+    if (batch_size <= 0 || model_target_size <= 0 || batch_size > kMaxBatchSize) return cudaErrorInvalidValue;
+
+    for (int i = 0; i < batch_size; ++i) {
+        if (rects[i].x < 0 || rects[i].y < 0 ||
+            rects[i].x + rects[i].w > src_w || rects[i].y + rects[i].h > src_h) {
+            return cudaErrorInvalidValue;
+        }
     }
 
-    dim3 block(kBlockX, kBlockY);
-    dim3 grid((model_target_size + kBlockX - 1) / kBlockX,
-              (model_target_size + kBlockY - 1) / kBlockY);
+    cudaError_t err = cudaMemcpyToSymbolAsync(
+        c_batch_rects, rects, batch_size * sizeof(TileRect), 0, cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) return err;
 
-    extract_tile_kernel<<<grid, block>>>(
-        d_src_img, src_stride_bytes,
-        rect.x, rect.y, rect.w, rect.h,
-        model_target_size,
-        d_dst_tensor);
+    dim3 block(kBlockX, kBlockY, 1);
+    dim3 grid((model_target_size + kBlockX - 1) / kBlockX,
+              (model_target_size + kBlockY - 1) / kBlockY,
+              batch_size);
+
+    extract_batch_tiles_kernel<<<grid, block, 0, stream>>>(
+        d_src_img, src_stride_bytes, src_w, src_h,
+        batch_size, model_target_size,
+        bgr_to_rgb, d_dst_batch_tensor);
 
     return cudaGetLastError();
 }

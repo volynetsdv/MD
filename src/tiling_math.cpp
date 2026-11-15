@@ -1,3 +1,8 @@
+/**
+ * @file tiling_math.cpp
+ * @brief Implementation of hardware-aware dynamic spatial tiling calculations.
+ */
+
 #include "tiling_math.hpp"
 
 #include <algorithm>
@@ -9,6 +14,12 @@ namespace
     constexpr int kTileGrid[] = {320, 416, 512, 640};
     constexpr int kTileGridSize = sizeof(kTileGrid) / sizeof(kTileGrid[0]);
 
+    /**
+     * @brief Select the largest standard tile resolution not exceeding the calculated threshold.
+     *
+     * @param t_calc Continuous tile capacity score derived from VRAM and altitude.
+     * @return int   Discrete tile size from {320, 416, 512, 640}.
+     */
     int pick_tile_size(float t_calc)
     {
         for (int i = kTileGridSize - 1; i >= 0; --i)
@@ -18,10 +29,13 @@ namespace
                 return kTileGrid[i];
             }
         }
-        // Fallback: smallest tile if T_calc < 320
+        // Fallback: smallest tile if T_calc < 320.
         return kTileGrid[0];
     }
 
+    /**
+     * @brief Clamp a floating-point value to the closed interval [lo, hi].
+     */
     float clampf(float v, float lo, float hi)
     {
         return std::max(lo, std::min(hi, v));
