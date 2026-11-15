@@ -41,7 +41,9 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-          cache-dependency-path: 'requirements.txt'
+          cache-dependency-path: |
+            requirements.txt
+            .devcontainer/requirements.txt
 
       # ================= LINUX DEPENDENCIES =================
       - name: "[Linux] Install system dependencies & headless Qt/XCB"
@@ -72,7 +74,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
-          pip install pyinstaller pytest
+          pip install pyinstaller pytest pytest-qt pyyaml
 
       - name: Prepare model assets
         run: |

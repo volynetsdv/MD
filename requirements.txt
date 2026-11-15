@@ -1,1 +1,3 @@
 -r .devcontainer/requirements.txt
+pyyaml>=6.0
+
