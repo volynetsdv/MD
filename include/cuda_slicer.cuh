@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include <cuda_runtime.h>
 
@@ -76,3 +78,53 @@ cudaError_t extract_batch_tiles_gpu(const uint8_t *d_src_img,
                                     float *d_dst_batch_tensor,
                                     bool bgr_to_rgb = false,
                                     cudaStream_t stream = 0);
+
+/**
+ * @brief Query free and total CUDA device memory without importing PyTorch.
+ *
+ * @return std::pair<size_t, size_t> (free_bytes, total_bytes), or (0, 0) if CUDA is unavailable.
+ */
+std::pair<size_t, size_t> get_gpu_memory_info();
+
+/**
+ * @brief Allocate device memory of `bytes` size via cudaMalloc.
+ *
+ * @param bytes Number of bytes to allocate on device.
+ * @return uintptr_t Device pointer address, or 0 on allocation failure.
+ */
+uintptr_t gpu_malloc(size_t bytes);
+
+/**
+ * @brief Free device memory allocated via gpu_malloc.
+ *
+ * @param dev_ptr Device pointer address (0 is treated as a no-op).
+ * @return cudaError_t CUDA status code.
+ */
+cudaError_t gpu_free(uintptr_t dev_ptr);
+
+/**
+ * @brief Copy memory from host buffer to device buffer synchronously.
+ *
+ * @param dst_dev_ptr Destination device pointer address.
+ * @param src_host_ptr Source host pointer address.
+ * @param bytes Number of bytes to copy.
+ * @return cudaError_t CUDA status code.
+ */
+cudaError_t gpu_memcpy_h2d(uintptr_t dst_dev_ptr, uintptr_t src_host_ptr, size_t bytes);
+
+/**
+ * @brief Copy memory from device buffer to host buffer synchronously.
+ *
+ * @param dst_host_ptr Destination host pointer address.
+ * @param src_dev_ptr Source device pointer address.
+ * @param bytes Number of bytes to copy.
+ * @return cudaError_t CUDA status code.
+ */
+cudaError_t gpu_memcpy_d2h(uintptr_t dst_host_ptr, uintptr_t src_dev_ptr, size_t bytes);
+
+/**
+ * @brief Synchronize the active CUDA device via cudaDeviceSynchronize.
+ *
+ * @return cudaError_t CUDA status code.
+ */
+cudaError_t gpu_synchronize();

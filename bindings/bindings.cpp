@@ -375,8 +375,54 @@ str
         py::arg("bgr_to_rgb") = false,
         py::arg("stream_ptr") = 0,
         "Extract a batch of tiles from GPU image tensor directly into float32 batch tensor [B, 3, S, S]");
+
+    m.def("get_gpu_memory_info",
+        []() {
+            const auto mem = get_gpu_memory_info();
+            return py::make_tuple(mem.first, mem.second);
+        },
+        "Return (free_bytes, total_bytes) of CUDA device VRAM via cudaMemGetInfo, or (0, 0) if unavailable.");
+
+    m.def("gpu_malloc",
+        [](size_t bytes) -> uintptr_t {
+            return gpu_malloc(bytes);
+        },
+        py::arg("bytes"),
+        "Allocate `bytes` on active CUDA device and return device pointer address (0 on failure).");
+
+    m.def("gpu_free",
+        [](uintptr_t dev_ptr) -> int {
+            return static_cast<int>(gpu_free(dev_ptr));
+        },
+        py::arg("dev_ptr"),
+        "Free device pointer allocated with gpu_malloc.");
+
+    m.def("gpu_memcpy_h2d",
+        [](uintptr_t dst_dev_ptr, uintptr_t src_host_ptr, size_t bytes) -> int {
+            return static_cast<int>(gpu_memcpy_h2d(dst_dev_ptr, src_host_ptr, bytes));
+        },
+        py::arg("dst_dev_ptr"), py::arg("src_host_ptr"), py::arg("bytes"),
+        "Synchronous cudaMemcpyHostToDevice wrapper.");
+
+    m.def("gpu_memcpy_d2h",
+        [](uintptr_t dst_host_ptr, uintptr_t src_dev_ptr, size_t bytes) -> int {
+            return static_cast<int>(gpu_memcpy_d2h(dst_host_ptr, src_dev_ptr, bytes));
+        },
+        py::arg("dst_host_ptr"), py::arg("src_dev_ptr"), py::arg("bytes"),
+        "Synchronous cudaMemcpyDeviceToHost wrapper.");
+
+    m.def("gpu_synchronize",
+        []() -> int {
+            return static_cast<int>(gpu_synchronize());
+        },
+        "Synchronize active CUDA device.");
 #else
     m.attr("HAVE_CUDA") = false;
+    m.def("get_gpu_memory_info",
+        []() {
+            return py::make_tuple(size_t{0}, size_t{0});
+        },
+        "Return (0, 0) when built without CUDA support.");
 #endif
 }
 

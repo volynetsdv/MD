@@ -8,7 +8,6 @@ from typing import Any, Dict, List
 import cv2
 import numpy as np
 import pytest
-import torch
 
 repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
@@ -29,14 +28,7 @@ def test_calculate_safe_batch_size_standard_mode():
 
 def test_calculate_safe_batch_size_oom_guard(monkeypatch: pytest.MonkeyPatch):
     """When free VRAM is critically low (e.g. 100 MB), formula must return 1 (OOM Guard)."""
-    # 100 MB free out of 16 GB total
-    fake_free_bytes = 100 * 1024 * 1024
-    fake_total_bytes = 16 * 1024 * 1024 * 1024
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        torch.cuda, "mem_get_info", lambda device=None: (fake_free_bytes, fake_total_bytes)
-    )
+    monkeypatch.setattr(UnifiedDetector, "query_vram_mb", staticmethod(lambda: (100.0, 16384.0)))
 
     batch_sz = calculate_safe_batch_size(target_tile_size=640, is_turbo=True, max_cap=4)
     assert batch_sz == 1
@@ -44,13 +36,7 @@ def test_calculate_safe_batch_size_oom_guard(monkeypatch: pytest.MonkeyPatch):
 
 def test_calculate_safe_batch_size_large_memory(monkeypatch: pytest.MonkeyPatch):
     """When free VRAM is abundant (e.g. 8000 MB), formula must return max_cap."""
-    fake_free_bytes = 8000 * 1024 * 1024
-    fake_total_bytes = 16 * 1024 * 1024 * 1024
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        torch.cuda, "mem_get_info", lambda device=None: (fake_free_bytes, fake_total_bytes)
-    )
+    monkeypatch.setattr(UnifiedDetector, "query_vram_mb", staticmethod(lambda: (8000.0, 16384.0)))
 
     batch_sz = calculate_safe_batch_size(target_tile_size=640, is_turbo=True, max_cap=4)
     assert batch_sz == 4
@@ -65,19 +51,26 @@ def test_calculate_safe_batch_size_dynamic_scaling(monkeypatch: pytest.MonkeyPat
     # safety_factor=0.80 -> 200 MB safe budget.
     # For 640: cost = 110.0 MB -> 200 // 110 = 1.
     # For 320: cost = 110.0 * (320/640)^2 = 27.5 MB -> 200 // 27.5 = 7.
-    fake_free_bytes = 250 * 1024 * 1024
-    fake_total_bytes = 16 * 1024 * 1024 * 1024
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        torch.cuda, "mem_get_info", lambda device=None: (fake_free_bytes, fake_total_bytes)
-    )
+    monkeypatch.setattr(UnifiedDetector, "query_vram_mb", staticmethod(lambda: (250.0, 16384.0)))
 
     b_640 = calculate_safe_batch_size(target_tile_size=640, is_turbo=True, max_cap=4)
     b_320 = calculate_safe_batch_size(target_tile_size=320, is_turbo=True, max_cap=8)
 
     assert b_640 == 1
     assert b_320 == 7
+
+
+def test_calculate_safe_batch_size_unavailable_vram_fallbacks(monkeypatch: pytest.MonkeyPatch):
+    """When VRAM cannot be queried, CPU falls back to 1 and DirectML falls back to 2."""
+    monkeypatch.setattr(UnifiedDetector, "query_vram_mb", staticmethod(lambda: (0.0, 0.0)))
+
+    assert calculate_safe_batch_size(target_tile_size=640, is_turbo=True) == 1
+    assert (
+        calculate_safe_batch_size(
+            target_tile_size=640, is_turbo=True, execution_provider="DmlExecutionProvider"
+        )
+        == 2
+    )
 
 
 def test_predict_batch_structure():

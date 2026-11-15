@@ -337,3 +337,35 @@ class TestPredictTileAPI:
         assert d1.w == 60.0
         assert d1.h == 50.0
         assert abs(d1.conf - 0.80) < 1e-4
+
+    def test_onnxruntime_silent_cpu_fallback_updates_status(self, monkeypatch, caplog):
+        """Verify session.get_providers() mismatch downgrades execution_provider to CPU cleanly."""
+        import onnxruntime as ort
+
+        class _FakeSession:
+            def get_providers(self):
+                return ["CPUExecutionProvider"]
+
+            def get_modelmeta(self):
+                class _Meta:
+                    custom_metadata_map = {}
+
+                return _Meta()
+
+        monkeypatch.setattr(ort, "InferenceSession", lambda *a, **kw: _FakeSession())
+        monkeypatch.setattr("src.detector_dispatcher.check_tensorrt_available", lambda *a, **kw: False)
+
+        detector = UnifiedDetector(
+            prefer_tensorrt=False,
+            force_provider="CUDAExecutionProvider",
+        )
+        assert detector.execution_provider == "CUDAExecutionProvider"
+        assert detector.is_gpu_accelerated is True
+
+        with caplog.at_level("WARNING"):
+            detector.get_session(320)
+
+        assert detector.execution_provider == "CPUExecutionProvider"
+        assert detector.active_backend_name == "CPUExecutionProvider"
+        assert detector.is_gpu_accelerated is False
+        assert "silently fell back" in caplog.text
