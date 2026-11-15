@@ -28,9 +28,109 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 # Safe import of pytiling_core and UnifiedDetector
 from gui.canvas_viewer import DEFAULT_CLASS_NAMES
-from src.detector_dispatcher import Detection, UnifiedDetector, calculate_safe_batch_size
+from src.detector_dispatcher import BackendType, Detection, UnifiedDetector, calculate_safe_batch_size
 
 logger = logging.getLogger(__name__)
+
+
+class _CudaDeviceBuffer:
+    """Minimal RAII CUDA device buffer wrapper for zero-copy pytiling_core slicing."""
+
+    def __init__(self, shape: Tuple[int, ...], ptr: int) -> None:
+        self.shape = shape
+        self.ndim = len(shape)
+        self._ptr = ptr
+        self.is_cuda = True
+
+    def data_ptr(self) -> int:
+        return self._ptr
+
+    def is_contiguous(self) -> bool:
+        return True
+
+    def numel(self) -> int:
+        total = 1
+        for dim in self.shape:
+            total *= dim
+        return total
+
+    def free(self) -> None:
+        if self._ptr and _pytiling_available and hasattr(pytiling_core, "gpu_free"):
+            pytiling_core.gpu_free(self._ptr)
+            self._ptr = 0
+
+    def __del__(self) -> None:
+        self.free()
+
+
+def _try_alloc_cuda_source_image(
+    img_rgb: np.ndarray, detector: Any, is_mock: bool
+) -> Optional[_CudaDeviceBuffer]:
+    """Upload full RGB frame once to GPU VRAM when TensorRT + CUDA slicing are active."""
+    if (
+        is_mock
+        or not _pytiling_available
+        or not getattr(pytiling_core, "HAVE_CUDA", False)
+        or not hasattr(pytiling_core, "gpu_malloc")
+        or detector is None
+        or getattr(detector, "backend", None) != BackendType.TENSORRT
+    ):
+        return None
+    _, total_vram_mb = UnifiedDetector.query_vram_mb()
+    if total_vram_mb <= 0.0:
+        return None
+    try:
+        contig = np.ascontiguousarray(img_rgb, dtype=np.uint8)
+        d_ptr = int(pytiling_core.gpu_malloc(contig.nbytes))
+        if d_ptr == 0:
+            return None
+        err = pytiling_core.gpu_memcpy_h2d(d_ptr, contig.ctypes.data, contig.nbytes)
+        if err != 0:
+            pytiling_core.gpu_free(d_ptr)
+            return None
+        return _CudaDeviceBuffer(contig.shape, d_ptr)
+    except Exception as exc:
+        logger.warning("InferenceWorker: GPU image upload failed (%s). Using CPU slicing.", exc)
+        return None
+
+
+def _run_cuda_sliced_batch(
+    d_img: _CudaDeviceBuffer,
+    img_w: int,
+    img_h: int,
+    batch_tiles: List[Any],
+    model_size: int,
+    detector: Any,
+    conf_threshold: float,
+) -> List[List[Detection]]:
+    """Slice tiles on GPU VRAM and dispatch TensorRT batch without PyTorch."""
+    batch_count = len(batch_tiles)
+    byte_count = batch_count * 3 * model_size * model_size * 4
+    d_batch_ptr = int(pytiling_core.gpu_malloc(byte_count))
+    if d_batch_ptr == 0:
+        raise RuntimeError(f"gpu_malloc failed for CUDA tile batch ({byte_count} bytes).")
+    d_batch = _CudaDeviceBuffer((batch_count, 3, model_size, model_size), d_batch_ptr)
+    try:
+        err = pytiling_core.extract_batch_tiles_gpu(
+            d_img.data_ptr(),
+            img_w * 3,
+            img_w,
+            img_h,
+            batch_tiles,
+            model_size,
+            d_batch.data_ptr(),
+            False,  # img is already RGB
+            0,
+        )
+        if err != 0:
+            raise RuntimeError(f"extract_batch_tiles_gpu failed with CUDA error {err}.")
+        return detector.predict_batch(
+            d_batch,
+            tile_size=model_size,
+            conf_threshold=conf_threshold,
+        )
+    finally:
+        d_batch.free()
 
 # Attempt pytiling_core import
 _pytiling_available = False
@@ -482,32 +582,10 @@ class InferenceWorker(QThread):
                 target_tile_size=model_size,
                 is_turbo=self.is_turbo,
                 max_cap=self.turbo_max_cap,
+                execution_provider=self.detector.execution_provider,
             )
 
-            try:
-                import torch
-                cuda_avail = torch.cuda.is_available()
-            except Exception:
-                torch = None
-                cuda_avail = False
-
-            can_use_cuda_slicer = (
-                not self.is_mock
-                and _pytiling_available
-                and getattr(pytiling_core, "HAVE_CUDA", False)
-                and cuda_avail
-                and self.detector is not None
-                and self.detector.is_gpu_accelerated
-            )
-
-            d_img = None
-            if can_use_cuda_slicer:
-                try:
-                    d_img = torch.as_tensor(img, device="cuda")
-                except Exception as exc:
-                    logger.warning("InferenceWorker: Failed to upload image to GPU: %s. Using CPU fallback.", exc)
-                    can_use_cuda_slicer = False
-                    d_img = None
+            d_img = _try_alloc_cuda_source_image(img, self.detector, self.is_mock)
 
             all_global_detections: List[Any] = []
 
@@ -517,7 +595,8 @@ class InferenceWorker(QThread):
                     self.progress_changed.emit(
                         batch_start, total_tiles, "Детекцію зупинено оператором."
                     )
-                    del d_img
+                    if d_img is not None:
+                        d_img.free()
                     return
 
                 batch_tiles = tiles[batch_start : batch_start + batch_size]
@@ -547,27 +626,15 @@ class InferenceWorker(QThread):
                                 )
                         batch_dets.append(tile_dets)
                     time.sleep(0.002)
-                elif can_use_cuda_slicer and d_img is not None:
-                    d_batch = torch.empty(
-                        (len(batch_tiles), 3, model_size, model_size),
-                        dtype=torch.float32,
-                        device="cuda",
-                    )
-                    pytiling_core.extract_batch_tiles_gpu(
-                        d_img.data_ptr(),
-                        img_w * 3,
+                elif d_img is not None:
+                    batch_dets = _run_cuda_sliced_batch(
+                        d_img,
                         img_w,
                         img_h,
                         batch_tiles,
                         model_size,
-                        d_batch.data_ptr(),
-                        False,  # img is already RGB
-                        0,
-                    )
-                    batch_dets = self.detector.predict_batch(
-                        d_batch,
-                        tile_size=model_size,
-                        conf_threshold=self.conf_threshold,
+                        self.detector,
+                        self.conf_threshold,
                     )
                 else:
                     batch_slices = []
@@ -610,7 +677,8 @@ class InferenceWorker(QThread):
                 status_msg = f"Обробка {t_label} {curr_done}/{total_tiles} ({mode_str}, знайдено: {len(all_global_detections)})..."
                 self.progress_changed.emit(curr_done, total_tiles, status_msg)
 
-            del d_img
+            if d_img is not None:
+                d_img.free()
 
             if self._is_cancelled:
                 return
@@ -950,31 +1018,10 @@ def run_tiled_inference(
         target_tile_size=model_size,
         is_turbo=turbo_active,
         max_cap=turbo_max_cap,
+        execution_provider=detector.execution_provider,
     )
 
-    try:
-        import torch
-        cuda_avail = torch.cuda.is_available()
-    except Exception:
-        torch = None
-        cuda_avail = False
-
-    can_use_cuda_slicer = (
-        not is_mock
-        and _pytiling_available
-        and getattr(pytiling_core, "HAVE_CUDA", False)
-        and cuda_avail
-        and detector is not None
-        and detector.is_gpu_accelerated
-    )
-
-    d_img = None
-    if can_use_cuda_slicer:
-        try:
-            d_img = torch.as_tensor(img_rgb, device="cuda")
-        except Exception:
-            can_use_cuda_slicer = False
-            d_img = None
+    d_img = _try_alloc_cuda_source_image(img_rgb, detector, is_mock)
 
     all_global_detections: List[Any] = []
     for batch_start in range(0, total_tiles, batch_size):
@@ -1008,27 +1055,15 @@ def run_tiled_inference(
                         )
                 batch_dets.append(tile_dets)
             time.sleep(0.002)
-        elif can_use_cuda_slicer and d_img is not None:
-            d_batch = torch.empty(
-                (len(batch_tiles), 3, model_size, model_size),
-                dtype=torch.float32,
-                device="cuda",
-            )
-            pytiling_core.extract_batch_tiles_gpu(
-                d_img.data_ptr(),
-                img_w * 3,
+        elif d_img is not None:
+            batch_dets = _run_cuda_sliced_batch(
+                d_img,
                 img_w,
                 img_h,
                 batch_tiles,
                 model_size,
-                d_batch.data_ptr(),
-                False,  # img_rgb is already RGB
-                0,
-            )
-            batch_dets = detector.predict_batch(
-                d_batch,
-                tile_size=model_size,
-                conf_threshold=conf_threshold,
+                detector,
+                conf_threshold,
             )
         else:
             batch_slices = []

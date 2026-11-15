@@ -159,3 +159,89 @@ cudaError_t extract_batch_tiles_gpu(const uint8_t* d_src_img,
 
     return cudaGetLastError();
 }
+
+std::pair<size_t, size_t> get_gpu_memory_info()
+{
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count <= 0)
+    {
+        // Clear any sticky error on systems without an active CUDA device/driver.
+        (void)cudaGetLastError();
+        return {0, 0};
+    }
+
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    err = cudaMemGetInfo(&free_bytes, &total_bytes);
+    if (err != cudaSuccess)
+    {
+        (void)cudaGetLastError();
+        return {0, 0};
+    }
+    return {free_bytes, total_bytes};
+}
+
+uintptr_t gpu_malloc(size_t bytes)
+{
+    if (bytes == 0)
+    {
+        return 0;
+    }
+    void *ptr = nullptr;
+    const cudaError_t err = cudaMalloc(&ptr, bytes);
+    if (err != cudaSuccess)
+    {
+        (void)cudaGetLastError();
+        return 0;
+    }
+    return reinterpret_cast<uintptr_t>(ptr);
+}
+
+cudaError_t gpu_free(uintptr_t dev_ptr)
+{
+    if (dev_ptr == 0)
+    {
+        return cudaSuccess;
+    }
+    return cudaFree(reinterpret_cast<void *>(dev_ptr));
+}
+
+cudaError_t gpu_memcpy_h2d(uintptr_t dst_dev_ptr, uintptr_t src_host_ptr, size_t bytes)
+{
+    if (bytes == 0)
+    {
+        return cudaSuccess;
+    }
+    if (dst_dev_ptr == 0 || src_host_ptr == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    return cudaMemcpy(
+        reinterpret_cast<void *>(dst_dev_ptr),
+        reinterpret_cast<const void *>(src_host_ptr),
+        bytes,
+        cudaMemcpyHostToDevice);
+}
+
+cudaError_t gpu_memcpy_d2h(uintptr_t dst_host_ptr, uintptr_t src_dev_ptr, size_t bytes)
+{
+    if (bytes == 0)
+    {
+        return cudaSuccess;
+    }
+    if (dst_host_ptr == 0 || src_dev_ptr == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    return cudaMemcpy(
+        reinterpret_cast<void *>(dst_host_ptr),
+        reinterpret_cast<const void *>(src_dev_ptr),
+        bytes,
+        cudaMemcpyDeviceToHost);
+}
+
+cudaError_t gpu_synchronize()
+{
+    return cudaDeviceSynchronize();
+}

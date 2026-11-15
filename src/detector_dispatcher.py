@@ -8,11 +8,15 @@ by automatically falling back to DirectML (DmlExecutionProvider), CUDA, or CPU.
 from __future__ import annotations
 
 import abc
+import ctypes
 import enum
+import glob
 import logging
 import os
 import platform
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -20,8 +24,93 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
+
+def _register_runtime_library_paths() -> None:
+    """Register bundled CUDA, cuDNN, and TensorRT shared library directories.
+
+    Supports both PyInstaller frozen bundles (`sys._MEIPASS`) and virtual-env
+    `nvidia-*` wheel layouts on Linux (`RTLD_GLOBAL`) and Windows (`add_dll_directory`).
+    """
+    try:
+        candidate_dirs: List[Path] = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            mp_path = Path(meipass)
+            candidate_dirs.append(mp_path)
+            for sub in ("nvidia", "tensorrt", "tensorrt_libs"):
+                sub_path = mp_path / sub
+                if sub_path.exists():
+                    candidate_dirs.append(sub_path)
+                    for child in sub_path.glob("*"):
+                        for lib_sub in (child, child / "lib", child / "bin"):
+                            if lib_sub.exists():
+                                candidate_dirs.append(lib_sub)
+
+        for entry in list(sys.path):
+            if not entry:
+                continue
+            ep = Path(entry)
+            nvidia_dir = ep / "nvidia"
+            if nvidia_dir.exists():
+                for pkg_dir in nvidia_dir.glob("*"):
+                    for lib_sub in (pkg_dir / "lib", pkg_dir / "bin"):
+                        if lib_sub.exists():
+                            candidate_dirs.append(lib_sub)
+            for trt_pkg in ("tensorrt_libs", "tensorrt"):
+                trt_dir = ep / trt_pkg
+                if trt_dir.exists():
+                    candidate_dirs.append(trt_dir)
+
+        seen: set[str] = set()
+        unique_dirs: List[Path] = []
+        for d in candidate_dirs:
+            resolved = str(d.resolve()) if d.exists() else ""
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                unique_dirs.append(Path(resolved))
+
+        if sys.platform == "win32":
+            add_dll_dir = getattr(os, "add_dll_directory", None)
+            for d in unique_dirs:
+                if add_dll_dir is not None:
+                    try:
+                        add_dll_dir(str(d))
+                    except Exception:
+                        pass
+                os.environ["PATH"] = f"{d}{os.pathsep}{os.environ.get('PATH', '')}"
+        else:
+            preload_patterns = (
+                "libcudart.so.12*",
+                "libnvJitLink.so.12*",
+                "libcublasLt.so.12*",
+                "libcublas.so.12*",
+                "libcufft.so.11*",
+                "libcurand.so.10*",
+                "libcudnn.so.9*",
+                "libcudnn_*.so.9*",
+                "libnvinfer.so.*",
+                "libnvinfer_plugin.so.*",
+                "libnvonnxparser.so.*",
+            )
+            for d in unique_dirs:
+                for pat in preload_patterns:
+                    for lib_file in sorted(glob.glob(str(d / pat))):
+                        if os.path.isfile(lib_file):
+                            try:
+                                ctypes.CDLL(lib_file, mode=ctypes.RTLD_GLOBAL)
+                            except Exception:
+                                pass
+    except Exception:
+        pass
+
+
+_register_runtime_library_paths()
+
 # Safe import of pytiling_core if compiled
 _PyTilingDetection = None
+pytiling_core = None
 try:
     import pytiling_core
 
@@ -39,23 +128,11 @@ except ImportError:
             except ImportError:
                 pass
 
-logger = logging.getLogger(__name__)
-
-# Ensure NVIDIA cuDNN runtime libraries are accessible by ONNX Runtime if installed via pip
-try:
-    for _p in sys.path:
-        _cudnn_dir = Path(_p) / "nvidia" / "cudnn" / "lib"
-        if _cudnn_dir.exists():
-            import ctypes
-            for _lib_name in ["libcudnn.so.9", "libcudnn_ops.so.9", "libcudnn_cnn.so.9", "libcudnn_adv.so.9"]:
-                _lib_path = _cudnn_dir / _lib_name
-                if _lib_path.exists():
-                    try:
-                        ctypes.CDLL(str(_lib_path), mode=ctypes.RTLD_GLOBAL)
-                    except Exception:
-                        pass
-except Exception:
-    pass
+_VRAM_UNAVAILABLE_LOGGED: bool = False
+_NVIDIA_SMI_FAILED: bool = False
+_PYNVML_FAILED: bool = False
+_NVIDIA_SMI_CACHE: Optional[Tuple[float, Tuple[float, float]]] = None
+_NVIDIA_SMI_CACHE_TTL_S: float = 2.0
 
 
 # =============================================================================
@@ -228,11 +305,22 @@ class BackendType(str, enum.Enum):
 GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 
 
+def _has_cuda_gpu() -> bool:
+    """Return True if an active CUDA-capable GPU is detectable without importing PyTorch."""
+    _, total_mb = UnifiedDetector.query_vram_mb()
+    if total_mb > 0.0:
+        return True
+    if os.path.exists("/dev/nvidia0"):
+        return True
+    return False
+
+
 def calculate_safe_batch_size(
     target_tile_size: int = 640,
     is_turbo: bool = False,
     max_cap: Optional[int] = None,
     safety_factor: float = 0.80,
+    execution_provider: Optional[str] = None,
 ) -> int:
     """Analytical calculation of the maximum safe tile batch size for Turbo mode (OOM-Safety).
 
@@ -250,13 +338,12 @@ def calculate_safe_batch_size(
         return 1
 
     try:
-        import torch
+        free_mb, total_mb = UnifiedDetector.query_vram_mb()
 
-        if not torch.cuda.is_available():
+        if free_mb <= 0.0 or total_mb <= 0.0:
+            if execution_provider == "DmlExecutionProvider":
+                return min(2, max_cap) if (max_cap is not None and max_cap > 0) else 2
             return 1
-
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        free_mb = float(free_bytes / (1024.0 * 1024.0))
 
         if free_mb < 200.0:
             return 1
@@ -285,15 +372,13 @@ MIN_ENGINE_SIZE_BYTES: int = 1048576  # 1 MB
 
 
 def check_tensorrt_available(models_dir: Optional[Path] = None) -> bool:
-    """Check if TensorRT C++ SDK, NVIDIA GPU, and valid .engine plans are present.
+    """Check if TensorRT SDK/runtime, NVIDIA GPU, and engine/ONNX plans are present.
 
     Looks for:
-    1. C++ library artifacts (`libtrt_detector.so` or `trt_detector.pyd`).
-    2. Python `tensorrt` module.
-    3. CUDA-capable GPU.
-    4. Valid compiled .engine plan files (>= 1MB).
+    1. C++ library artifacts (`libtrt_detector.so` or `trt_detector.pyd`) or Python `tensorrt`.
+    2. CUDA-capable GPU (queried natively without PyTorch).
+    3. Valid compiled `.engine` plan files (>= 1MB) or `.onnx` files (>= 1MB) for local engine build.
     """
-    # 1. Check for shared library / pyd
     repo_root = Path(__file__).resolve().parent.parent
     lib_candidates = [
         repo_root / "build" / "libtrt_detector.so",
@@ -302,7 +387,6 @@ def check_tensorrt_available(models_dir: Optional[Path] = None) -> bool:
     ]
     has_lib = any(cand.exists() for cand in lib_candidates)
 
-    # 2. Check for python tensorrt module
     has_py_trt = False
     try:
         import tensorrt as trt
@@ -314,25 +398,17 @@ def check_tensorrt_available(models_dir: Optional[Path] = None) -> bool:
     if not (has_lib or has_py_trt):
         return False
 
-    # 3. Check for CUDA GPU availability
-    has_cuda = False
-    try:
-        import torch
-
-        has_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
-    except ImportError:
-        # Fallback to checking cuda driver
-        has_cuda = os.path.exists("/dev/nvidia0") or sys.platform == "win32"
-
-    if not has_cuda:
+    if not _has_cuda_gpu():
         return False
 
-    # 4. Check for valid compiled TensorRT engine files (>= 1MB)
     m_dir = Path(models_dir) if models_dir is not None else repo_root / "models"
     if m_dir.exists():
         engine_files = list(m_dir.glob("*.engine"))
-        if engine_files and not any(f.stat().st_size >= MIN_ENGINE_SIZE_BYTES for f in engine_files):
-            logger.info("UnifiedDetector: All .engine files are stubs (<1MB). Bypassing TensorRT.")
+        has_valid_engine = any(f.stat().st_size >= MIN_ENGINE_SIZE_BYTES for f in engine_files)
+        onnx_files = list(m_dir.glob("*.onnx"))
+        has_valid_onnx = any(f.stat().st_size >= MIN_ENGINE_SIZE_BYTES for f in onnx_files)
+        if engine_files and not has_valid_engine and not has_valid_onnx:
+            logger.info("UnifiedDetector: All .engine files are stubs (<1MB) and no ONNX source found. Bypassing TensorRT.")
             return False
 
     return True
@@ -534,33 +610,125 @@ class TensorRTBackend(InferenceBackend):
 
         return dict(DEFAULT_CLASS_NAMES)
 
+    @staticmethod
+    def _get_engine_cache_dir() -> Path:
+        """Return writable local cache directory for compiled TensorRT engines."""
+        if sys.platform == "win32":
+            base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        else:
+            base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+        cache_dir = base / "AerialWorkstation" / "engines"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
+    def _find_onnx_path(self, size: int) -> Optional[Path]:
+        """Locate source ONNX file matching requested tile resolution."""
+        for name in (f"yolo_{size}.onnx", f"yolo26s_{size}.onnx"):
+            cand = self.models_dir / name
+            if cand.exists() and cand.stat().st_size >= MIN_ENGINE_SIZE_BYTES:
+                return cand
+        return None
+
+    @staticmethod
+    def _build_engine_from_onnx(onnx_path: Path, engine_out_path: Path, size: int) -> bytes:
+        """Compile an ONNX model into a GPU-native TensorRT engine plan on first run."""
+        import tensorrt as trt
+
+        trt_logger = trt.Logger(trt.Logger.WARNING)
+        builder = trt.Builder(trt_logger)
+        network = builder.create_network(
+            1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        )
+        parser = trt.OnnxParser(network, trt_logger)
+
+        if not parser.parse_from_file(str(onnx_path)):
+            errors = [str(parser.get_error(i)) for i in range(parser.num_errors)]
+            raise RuntimeError(
+                f"Failed to parse ONNX for TensorRT ({onnx_path}): {'; '.join(errors)}"
+            )
+
+        config = builder.create_builder_config()
+        if hasattr(config, "set_memory_pool_limit"):
+            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1 GB
+        if builder.platform_has_fast_fp16:
+            config.set_flag(trt.BuilderFlag.FP16)
+
+        input_tensor = network.get_input(0)
+        in_name = input_tensor.name
+        profile = builder.create_optimization_profile()
+        profile.set_shape(
+            in_name,
+            (1, 3, size, size),
+            (4, 3, size, size),
+            (12, 3, size, size),
+        )
+        config.add_optimization_profile(profile)
+
+        serialized = builder.build_serialized_network(network, config)
+        if serialized is None:
+            raise RuntimeError(f"TensorRT failed to build serialized engine from {onnx_path}")
+
+        raw_bytes = bytes(serialized)
+        try:
+            engine_out_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = engine_out_path.with_suffix(".engine.tmp")
+            tmp_path.write_bytes(raw_bytes)
+            tmp_path.replace(engine_out_path)
+            logger.info(
+                "TensorRTBackend: Cached compiled engine (%d MB) to %s",
+                len(raw_bytes) // (1024 * 1024),
+                engine_out_path,
+            )
+        except Exception as save_err:
+            logger.warning("TensorRTBackend: Could not save engine cache %s: %s", engine_out_path, save_err)
+        return raw_bytes
+
     def get_session(self, size: int) -> Any:
-        """Load and cache a TensorRT engine execution context."""
+        """Load and cache a TensorRT engine execution context, building locally if needed."""
         if size in self._sessions:
             return self._sessions[size]
-
-        engine_path = self.models_dir / f"yolo_{size}.engine"
-        if not engine_path.exists() or engine_path.stat().st_size < MIN_ENGINE_SIZE_BYTES:
-            raise FileNotFoundError(
-                f"TensorRT engine {engine_path} not found or invalid size (< 1MB)."
-            )
 
         import tensorrt as trt
 
         runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
-        with open(engine_path, "rb") as f:
-            engine = runtime.deserialize_cuda_engine(f.read())
+        cache_dir = self._get_engine_cache_dir()
+        bundled_engine = self.models_dir / f"yolo_{size}.engine"
+        cached_engine = cache_dir / f"yolo_{size}.engine"
+
+        engine = None
+        for candidate in (cached_engine, bundled_engine):
+            if candidate.exists() and candidate.stat().st_size >= MIN_ENGINE_SIZE_BYTES:
+                engine = runtime.deserialize_cuda_engine(candidate.read_bytes())
+                if engine is not None:
+                    logger.info("TensorRTBackend: Loaded engine for size %d from %s", size, candidate)
+                    break
+                logger.warning(
+                    "TensorRTBackend: Engine %s incompatible with current GPU/TensorRT; rebuilding locally.",
+                    candidate,
+                )
+
         if engine is None:
-            raise RuntimeError(f"Failed to deserialize TensorRT engine: {engine_path}")
+            onnx_path = self._find_onnx_path(size)
+            if onnx_path is None:
+                raise FileNotFoundError(
+                    f"TensorRT engine yolo_{size}.engine unavailable and no ONNX model found in {self.models_dir}."
+                )
+            logger.info("TensorRTBackend: Building local TensorRT engine for resolution %d from %s...", size, onnx_path)
+            raw_bytes = self._build_engine_from_onnx(onnx_path, cached_engine, size)
+            engine = runtime.deserialize_cuda_engine(raw_bytes)
+            if engine is None:
+                raise RuntimeError(f"Failed to deserialize newly built TensorRT engine for size {size}")
+
         context = engine.create_execution_context()
         session = {"engine": engine, "context": context, "size": size}
         self._sessions[size] = session
         logger.info("TensorRTBackend: Cached session for resolution %d.", size)
         return session
 
-    def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
-        """Execute TensorRT forward pass directly in VRAM without host copies with dynamic batching."""
-        import torch
+    def run_inference(self, session: Any, input_array: Any, size: int) -> np.ndarray:
+        """Execute TensorRT forward pass directly in VRAM without importing PyTorch."""
+        if pytiling_core is None or not hasattr(pytiling_core, "gpu_malloc"):
+            raise RuntimeError("pytiling_core CUDA buffer helpers are unavailable for TensorRT inference.")
 
         engine = session["engine"]
         context = session["context"]
@@ -568,70 +736,107 @@ class TensorRTBackend(InferenceBackend):
         input_name = engine.get_tensor_name(0)
         output_name = engine.get_tensor_name(1)
 
-        if isinstance(input_array, torch.Tensor):
-            d_input = input_array if input_array.is_contiguous() else input_array.contiguous()
-            if not d_input.is_cuda:
-                d_input = d_input.cuda()
-            if d_input.ndim == 3:
-                d_input = d_input.unsqueeze(0)
-            b = d_input.shape[0]
-            input_shape = tuple(d_input.shape)
+        is_gpu_tensor = (
+            hasattr(input_array, "data_ptr")
+            and hasattr(input_array, "shape")
+            and (
+                getattr(input_array, "is_cuda", False)
+                or getattr(getattr(input_array, "device", None), "type", None) == "cuda"
+            )
+        )
+
+        d_input_ptr = 0
+        owns_d_input = False
+        host_arr: Optional[np.ndarray] = None
+
+        if is_gpu_tensor:
+            tensor = input_array
+            if hasattr(tensor, "is_contiguous") and not tensor.is_contiguous():
+                tensor = tensor.contiguous()
+            if tensor.ndim == 3:
+                tensor = tensor.unsqueeze(0)
+            input_shape = tuple(int(dim) for dim in tensor.shape)
+            b = input_shape[0]
+            d_input_ptr = int(tensor.data_ptr())
         else:
-            b = input_array.shape[0] if input_array.ndim == 4 else 1
-            if not input_array.flags.c_contiguous:
-                input_array = np.ascontiguousarray(input_array)
-            d_input = torch.as_tensor(input_array, device="cuda")
-            input_shape = tuple(input_array.shape) if input_array.ndim == 4 else (1, 3, size, size)
+            host_arr = np.asarray(input_array, dtype=np.float32)
+            if host_arr.ndim == 3:
+                host_arr = np.expand_dims(host_arr, axis=0)
+            if not host_arr.flags.c_contiguous:
+                host_arr = np.ascontiguousarray(host_arr)
+            input_shape = tuple(int(dim) for dim in host_arr.shape)
+            b = input_shape[0]
+            d_input_ptr = int(pytiling_core.gpu_malloc(host_arr.nbytes))
+            if d_input_ptr == 0:
+                raise RuntimeError(f"CUDA gpu_malloc failed for input tensor ({host_arr.nbytes} bytes).")
+            owns_d_input = True
+            err = pytiling_core.gpu_memcpy_h2d(d_input_ptr, host_arr.ctypes.data, host_arr.nbytes)
+            if err != 0:
+                pytiling_core.gpu_free(d_input_ptr)
+                raise RuntimeError(f"CUDA gpu_memcpy_h2d failed with error code {err}.")
 
-        out_shape = list(engine.get_tensor_shape(output_name))
-        out_shape[0] = b
-
-        if not hasattr(self, "_cuda_stream") or self._cuda_stream is None:
-            self._cuda_stream = torch.cuda.Stream()
-        stream = self._cuda_stream
-
-        if b > 1:
-            try:
-                # Attempt native dynamic batch setting
-                context.set_input_shape(input_name, input_shape)
-                d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
-                context.set_tensor_address(input_name, d_input.data_ptr())
-                context.set_tensor_address(output_name, d_output.data_ptr())
-                context.execute_async_v3(stream.cuda_stream)
-                stream.synchronize()
-                return d_output.cpu().numpy()
-            except Exception as exc:
-                logger.warning(
-                    "TensorRT native dynamic batch execution failed for B=%d (size %d): %s. "
-                    "Executing per-slice in VRAM.",
-                    b,
-                    size,
-                    exc,
-                )
-                # Fixed batch size 1 engine fallback: execute per-slice in VRAM
-                out_shape[0] = 1
-                d_outs = []
-                for i in range(b):
-                    slice_i = d_input[i : i + 1].contiguous()
-                    d_out_i = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
-                    context.set_tensor_address(input_name, slice_i.data_ptr())
-                    context.set_tensor_address(output_name, d_out_i.data_ptr())
-                    context.execute_async_v3(stream.cuda_stream)
-                    d_outs.append(d_out_i)
-                stream.synchronize()
-                d_stacked = torch.cat(d_outs, dim=0)
-                return d_stacked.cpu().numpy()
-        else:
+        d_output_ptr = 0
+        try:
             try:
                 context.set_input_shape(input_name, input_shape)
+                out_shape = list(context.get_tensor_shape(output_name))
             except Exception:
-                pass
-            d_output = torch.empty(tuple(out_shape), dtype=torch.float32, device="cuda")
-            context.set_tensor_address(input_name, d_input.data_ptr())
-            context.set_tensor_address(output_name, d_output.data_ptr())
-            context.execute_async_v3(stream.cuda_stream)
-            stream.synchronize()
-            return d_output.cpu().numpy()
+                out_shape = list(engine.get_tensor_shape(output_name))
+                out_shape[0] = b
+
+            if any(dim <= 0 for dim in out_shape):
+                engine_out = list(engine.get_tensor_shape(output_name))
+                out_shape = [b if i == 0 else d for i, d in enumerate(engine_out)]
+
+            out_host = np.empty(tuple(out_shape), dtype=np.float32)
+            d_output_ptr = int(pytiling_core.gpu_malloc(out_host.nbytes))
+            if d_output_ptr == 0:
+                raise RuntimeError(f"CUDA gpu_malloc failed for output tensor ({out_host.nbytes} bytes).")
+
+            if b > 1:
+                try:
+                    context.set_input_shape(input_name, input_shape)
+                    context.set_tensor_address(input_name, d_input_ptr)
+                    context.set_tensor_address(output_name, d_output_ptr)
+                    if not context.execute_async_v3(0):
+                        raise RuntimeError("TensorRT execute_async_v3 returned False.")
+                    pytiling_core.gpu_synchronize()
+                    pytiling_core.gpu_memcpy_d2h(out_host.ctypes.data, d_output_ptr, out_host.nbytes)
+                    return out_host
+                except Exception as exc:
+                    logger.warning(
+                        "TensorRT native dynamic batch execution failed for B=%d (size %d): %s. "
+                        "Executing per-slice in VRAM.",
+                        b,
+                        size,
+                        exc,
+                    )
+                    single_in_shape = (1, input_shape[1], input_shape[2], input_shape[3])
+                    single_out_shape = (1, *out_shape[1:])
+                    single_in_bytes = int(np.prod(single_in_shape)) * 4
+                    single_out_bytes = int(np.prod(single_out_shape)) * 4
+                    for i in range(b):
+                        context.set_input_shape(input_name, single_in_shape)
+                        context.set_tensor_address(input_name, d_input_ptr + i * single_in_bytes)
+                        context.set_tensor_address(output_name, d_output_ptr + i * single_out_bytes)
+                        if not context.execute_async_v3(0):
+                            raise RuntimeError(f"TensorRT per-slice execute_async_v3 failed at slice {i}.")
+                    pytiling_core.gpu_synchronize()
+                    pytiling_core.gpu_memcpy_d2h(out_host.ctypes.data, d_output_ptr, out_host.nbytes)
+                    return out_host
+            else:
+                context.set_tensor_address(input_name, d_input_ptr)
+                context.set_tensor_address(output_name, d_output_ptr)
+                if not context.execute_async_v3(0):
+                    raise RuntimeError("TensorRT execute_async_v3 returned False.")
+                pytiling_core.gpu_synchronize()
+                pytiling_core.gpu_memcpy_d2h(out_host.ctypes.data, d_output_ptr, out_host.nbytes)
+                return out_host
+        finally:
+            if d_output_ptr:
+                pytiling_core.gpu_free(d_output_ptr)
+            if owns_d_input and d_input_ptr:
+                pytiling_core.gpu_free(d_input_ptr)
 
 
 class ONNXRuntimeBackendBase(InferenceBackend):
@@ -644,6 +849,7 @@ class ONNXRuntimeBackendBase(InferenceBackend):
     ) -> None:
         super().__init__(models_dir)
         self._providers: List[str] = list(providers) if providers else ["CPUExecutionProvider"]
+        self._active_provider: str = self._providers[0] if self._providers else "CPUExecutionProvider"
 
     @property
     def name(self) -> BackendType:
@@ -652,6 +858,18 @@ class ONNXRuntimeBackendBase(InferenceBackend):
     @property
     def providers(self) -> List[str]:
         return self._providers
+
+    @property
+    def execution_provider(self) -> str:
+        return self._active_provider
+
+    @property
+    def is_gpu_accelerated(self) -> bool:
+        return self._active_provider in (
+            "DmlExecutionProvider",
+            "CUDAExecutionProvider",
+            "TensorrtExecutionProvider",
+        )
 
     def get_class_names(self) -> Dict[int, str]:
         """Extract class names from ONNX model metadata with fallback."""
@@ -711,20 +929,46 @@ class ONNXRuntimeBackendBase(InferenceBackend):
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.intra_op_num_threads = min(4, os.cpu_count() or 1)
 
+        requested_providers = list(self._providers)
         try:
             session = ort.InferenceSession(
-                str(model_path), sess_options, providers=self._providers
+                str(model_path), sess_options, providers=requested_providers
             )
         except Exception as err:
             logger.warning(
                 "UnifiedDetector: Provider %s failed (%s). Falling back to CPUExecutionProvider.",
-                self._providers,
+                requested_providers,
                 err,
             )
             self._providers = ["CPUExecutionProvider"]
+            self._active_provider = "CPUExecutionProvider"
             session = ort.InferenceSession(
                 str(model_path), sess_options, providers=self._providers
             )
+
+        actual_providers = (
+            list(session.get_providers())
+            if hasattr(session, "get_providers")
+            else list(self._providers)
+        )
+        requested_gpu = [
+            p
+            for p in requested_providers
+            if p in ("CUDAExecutionProvider", "DmlExecutionProvider", "TensorrtExecutionProvider")
+        ]
+        if requested_gpu and not any(p in actual_providers for p in requested_gpu):
+            logger.warning(
+                "UnifiedDetector: Requested GPU execution provider(s) %s, but ONNX Runtime "
+                "silently fell back to %s (verify CUDA 12 / cuDNN 9 / DirectML shared libraries). "
+                "Updating active execution provider to %s.",
+                requested_gpu,
+                actual_providers,
+                actual_providers[0] if actual_providers else "CPUExecutionProvider",
+            )
+            self._providers = actual_providers if actual_providers else ["CPUExecutionProvider"]
+            self._active_provider = self._providers[0]
+        elif actual_providers:
+            self._active_provider = actual_providers[0]
 
         self._sessions[size] = session
         logger.info(
@@ -777,14 +1021,6 @@ class DirectMLBackend(ONNXRuntimeBackendBase):
         provs = custom_providers or ["DmlExecutionProvider", "CPUExecutionProvider"]
         super().__init__(models_dir, providers=provs)
 
-    @property
-    def execution_provider(self) -> str:
-        return "DmlExecutionProvider"
-
-    @property
-    def is_gpu_accelerated(self) -> bool:
-        return True
-
 
 class CUDAExecutionProviderBackend(ONNXRuntimeBackendBase):
     """NVIDIA CUDA (CUDAExecutionProvider) backend strategy for ONNX Runtime."""
@@ -797,14 +1033,6 @@ class CUDAExecutionProviderBackend(ONNXRuntimeBackendBase):
         provs = custom_providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]
         super().__init__(models_dir, providers=provs)
 
-    @property
-    def execution_provider(self) -> str:
-        return "CUDAExecutionProvider"
-
-    @property
-    def is_gpu_accelerated(self) -> bool:
-        return True
-
 
 class CPUExecutionProviderBackend(ONNXRuntimeBackendBase):
     """CPU execution provider strategy for deterministic portable inference."""
@@ -816,14 +1044,6 @@ class CPUExecutionProviderBackend(ONNXRuntimeBackendBase):
     ) -> None:
         provs = custom_providers or ["CPUExecutionProvider"]
         super().__init__(models_dir, providers=provs)
-
-    @property
-    def execution_provider(self) -> str:
-        return "CPUExecutionProvider"
-
-    @property
-    def is_gpu_accelerated(self) -> bool:
-        return False
 
 
 # =============================================================================
@@ -880,6 +1100,92 @@ class UnifiedDetector:
     Dispatches tile inference to either C++ TensorRT or ONNX Runtime (DirectML / CUDA / CPU)
     via polymorphic InferenceBackend strategies while exposing an identical, fail-safe API.
     """
+
+    @staticmethod
+    def query_vram_mb() -> Tuple[float, float]:
+        """Query free and total GPU VRAM in MiB without importing PyTorch.
+
+        Cascade:
+            1. Native C++ `pytiling_core.get_gpu_memory_info()` (via `cudaMemGetInfo`).
+            2. `nvidia-smi` CLI query (1.5s timeout, cached on success/failure).
+            3. `pynvml` NVML Python bindings, if available.
+            4. Silent `(0.0, 0.0)` with one-time informational log if unavailable.
+
+        Returns:
+            Tuple `(free_vram_mb, total_vram_mb)` in MiB.
+        """
+        global _VRAM_UNAVAILABLE_LOGGED, _NVIDIA_SMI_FAILED, _PYNVML_FAILED, _NVIDIA_SMI_CACHE
+
+        # 1. Native CUDA call via pytiling_core (Zero PyTorch dependency)
+        if pytiling_core is not None and hasattr(pytiling_core, "get_gpu_memory_info"):
+            try:
+                free_b, total_b = pytiling_core.get_gpu_memory_info()
+                if total_b > 0:
+                    return float(free_b) / (1024.0 * 1024.0), float(total_b) / (1024.0 * 1024.0)
+            except Exception:
+                pass
+
+        # 2. nvidia-smi subprocess fallback (cached to avoid frame-loop overhead/spam)
+        if not _NVIDIA_SMI_FAILED:
+            now = time.monotonic()
+            if _NVIDIA_SMI_CACHE is not None and (now - _NVIDIA_SMI_CACHE[0]) < _NVIDIA_SMI_CACHE_TTL_S:
+                return _NVIDIA_SMI_CACHE[1]
+            try:
+                run_kwargs: Dict[str, Any] = {
+                    "capture_output": True,
+                    "text": True,
+                    "timeout": 1.5,
+                    "check": False,
+                }
+                if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                    run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                proc = subprocess.run(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=memory.free,memory.total",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    **run_kwargs,
+                )
+                if proc.returncode == 0 and proc.stdout:
+                    first_line = proc.stdout.strip().splitlines()[0]
+                    parts = [p.strip() for p in first_line.split(",")]
+                    if len(parts) >= 2:
+                        free_mb = float(parts[0])
+                        total_mb = float(parts[1])
+                        if total_mb > 0.0:
+                            res = (free_mb, total_mb)
+                            _NVIDIA_SMI_CACHE = (now, res)
+                            return res
+                _NVIDIA_SMI_FAILED = True
+            except Exception:
+                _NVIDIA_SMI_FAILED = True
+
+        # 3. pynvml fallback
+        if not _PYNVML_FAILED:
+            try:
+                import pynvml
+
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                return float(info.free) / (1024.0 * 1024.0), float(info.total) / (1024.0 * 1024.0)
+            except Exception:
+                _PYNVML_FAILED = True
+
+        # 4. Unavailable: log status at most once, no per-frame spam
+        if not _VRAM_UNAVAILABLE_LOGGED:
+            logger.info(
+                "UnifiedDetector: CUDA VRAM query unavailable (pytiling_core/nvidia-smi/pynvml); "
+                "using conservative batch defaults."
+            )
+            _VRAM_UNAVAILABLE_LOGGED = True
+        return 0.0, 0.0
+
+    @property
+    def active_backend_name(self) -> str:
+        """Return actual active backend/provider name (e.g. 'TensorRT', 'CUDAExecutionProvider', 'CPUExecutionProvider')."""
+        return self._backend_strategy.execution_provider
 
     def __init__(
         self,

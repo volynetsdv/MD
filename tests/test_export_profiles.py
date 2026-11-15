@@ -23,7 +23,13 @@ import onnx
 import onnxruntime as ort
 import pytest
 
-from train_pipeline.export_models import GRID_RESOLUTIONS, export_all_profiles
+from train_pipeline.export_models import (
+    GRID_RESOLUTIONS,
+    HAS_TENSORRT,
+    _is_cuda_gpu_available,
+    build_trt_engine,
+    export_all_profiles,
+)
 
 
 # =============================================================================
@@ -52,27 +58,81 @@ def exported_models_dir(tmp_path_factory) -> Path:
 
 
 # =============================================================================
-# Test 1: Presence of all 4 profiles (.onnx and .engine)
+# Test 1: Presence of all 4 ONNX profiles (always) and TensorRT engines (GPU only)
 # =============================================================================
 def test_all_four_profiles_presence(exported_models_dir: Path):
-    """
-    Test 1: Verify presence of all 4 grid profiles:
-    - yolo_320.onnx and yolo_320.engine
-    - yolo_416.onnx and yolo_416.engine
-    - yolo_512.onnx and yolo_512.engine
-    - yolo_640.onnx and yolo_640.engine
-    """
+    """Test 1a: Verify presence of all 4 ONNX grid profiles regardless of GPU availability."""
     for sz in GRID_RESOLUTIONS:
         onnx_file = exported_models_dir / f"yolo_{sz}.onnx"
-        engine_file = exported_models_dir / f"yolo_{sz}.engine"
-
-        # Check ONNX presence and non-zero size
         assert onnx_file.exists(), f"Missing ONNX file: {onnx_file}"
         assert onnx_file.stat().st_size > 1024, f"ONNX file is suspiciously small: {onnx_file}"
 
-        # Check Engine presence and non-zero size
+
+@pytest.mark.skipif(
+    not (_is_cuda_gpu_available() and HAS_TENSORRT),
+    reason="No physical NVIDIA GPU/driver available in CI environment",
+)
+def test_tensorrt_engines_presence(exported_models_dir: Path):
+    """Test 1b: Verify TensorRT .engine artifacts are built when NVIDIA GPU + TRT are present."""
+    for sz in GRID_RESOLUTIONS:
+        engine_file = exported_models_dir / f"yolo_{sz}.engine"
         assert engine_file.exists(), f"Missing Engine file: {engine_file}"
         assert engine_file.stat().st_size > 0, f"Engine file is empty: {engine_file}"
+
+
+def test_export_without_gpu_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog):
+    """Verify build_trt_engine and export_all_profiles fall back cleanly without CUDA GPU/driver."""
+    import train_pipeline.export_models as em
+
+    # 1. Force GPU-absent path regardless of whether tensorrt is installed on the runner
+    monkeypatch.setattr(em, "_is_cuda_gpu_available", lambda: False)
+    monkeypatch.setattr(em, "HAS_TENSORRT", True)
+
+    out_dir = tmp_path / "cpu_only_export"
+    with caplog.at_level("WARNING"):
+        results = export_all_profiles(
+            weights="yolo11n.yaml",
+            output_dir=out_dir,
+            sizes=(320,),
+            fp16=True,
+            int8=False,
+            workspace_mb=256,
+            opset=17,
+            device="cpu",
+        )
+
+    assert 320 in results
+    assert results[320]["onnx"] is not None and results[320]["onnx"].exists()
+    assert results[320]["engine"] is None
+    assert "skipping TensorRT .engine build" in caplog.text
+
+    # 2. Verify Windows CI scenario where both HAS_TENSORRT and CUDA GPU are False
+    caplog.clear()
+    monkeypatch.setattr(em, "HAS_TENSORRT", False)
+    with caplog.at_level("WARNING"):
+        res_no_trt = build_trt_engine(
+            onnx_path=results[320]["onnx"],
+            engine_path=out_dir / "yolo_320.engine",
+            img_size=320,
+        )
+    assert res_no_trt is None
+    assert "skipping TensorRT .engine build" in caplog.text
+
+    # 3. Verify protection against TensorRT Builder TypeError (factory returned nullptr)
+    if HAS_TENSORRT and em.trt is not None:
+        monkeypatch.setattr(em, "HAS_TENSORRT", True)
+        monkeypatch.setattr(em, "_is_cuda_gpu_available", lambda: True)
+
+        def _failing_builder(_logger):
+            raise TypeError("pybind11::init(): factory function returned nullptr")
+
+        monkeypatch.setattr(em.trt, "Builder", _failing_builder)
+        res_null_builder = build_trt_engine(
+            onnx_path=results[320]["onnx"],
+            engine_path=out_dir / "yolo_320.engine",
+            img_size=320,
+        )
+        assert res_null_builder is None
 
 
 # =============================================================================

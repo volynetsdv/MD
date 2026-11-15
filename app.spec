@@ -5,14 +5,18 @@ Builds a standalone executable bundle for Windows (.exe) and Linux (.AppImage/bi
 Excludes heavy training dependencies to keep distribution minimal.
 """
 
+import importlib.util
+import site
 import sys
 from pathlib import Path
 
 block_cipher = None
 repo_root = Path.cwd()
 
-# Data files to bundle
+# Data and binary files to bundle
 datas = []
+binaries = []
+
 models_dir = repo_root / "models"
 if models_dir.exists():
     for m in sorted(models_dir.glob("*.onnx")):
@@ -21,9 +25,45 @@ if models_dir.exists():
 # Include compiled C++ binaries if present (only existing files)
 for b_dir in [repo_root / "build", repo_root / "build" / "bindings", repo_root / "build" / "Release"]:
     if b_dir.exists():
-        for ext in ("*.so", "*.pyd", "*.dll"):
+        for ext in ("*.so", "*.so.*", "*.pyd", "*.dll"):
             for f in sorted(b_dir.glob(ext)):
-                datas.append((str(f), "."))
+                if f.is_file():
+                    binaries.append((str(f), "."))
+
+# Dynamically collect bundled NVIDIA CUDA 12 / cuDNN 9 / TensorRT runtime libraries
+# so PyInstaller bundles remain autonomous on systems with CUDA 13 or no CUDA toolkit.
+_site_roots = []
+try:
+    _site_roots.extend([Path(p) for p in site.getsitepackages()])
+except Exception:
+    pass
+_site_roots.extend([Path(p) for p in sys.path if p])
+
+_seen_bins = set()
+_lib_ext = "*.dll" if sys.platform == "win32" else "*.so*"
+for _root in _site_roots:
+    if not _root.exists():
+        continue
+    _nvidia_root = _root / "nvidia"
+    if _nvidia_root.exists():
+        for _pkg in sorted(_nvidia_root.glob("*")):
+            for _sub in (_pkg / "lib", _pkg / "bin"):
+                if _sub.exists():
+                    for _f in sorted(_sub.glob(_lib_ext)):
+                        if _f.is_file():
+                            _rf = str(_f.resolve())
+                            if _rf not in _seen_bins:
+                                _seen_bins.add(_rf)
+                                binaries.append((str(_f), "."))
+    for _trt_dir_name in ("tensorrt_libs", "tensorrt"):
+        _trt_dir = _root / _trt_dir_name
+        if _trt_dir.exists():
+            for _f in sorted(_trt_dir.glob(_lib_ext)):
+                if _f.is_file():
+                    _rf = str(_f.resolve())
+                    if _rf not in _seen_bins:
+                        _seen_bins.add(_rf)
+                        binaries.append((str(_f), "."))
 
 # Include config files
 config_dir = repo_root / "config"
@@ -51,8 +91,16 @@ hiddenimports = [
     "src.detector_dispatcher",
 ]
 
+for _opt_mod in ("tensorrt", "tensorrt_libs", "pynvml"):
+    if importlib.util.find_spec(_opt_mod) is not None:
+        hiddenimports.append(_opt_mod)
+
 # Exclude heavy training frameworks and dev tools from inference distribution
 excludes = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "torch.testing",
     "ultralytics",
     "pytest",
     "pytestqt",
@@ -60,13 +108,12 @@ excludes = [
     "jupyter",
     "matplotlib",
     "tensorboard",
-    "torch.testing",
 ]
 
 a = Analysis(
     ["main.py"],
     pathex=[str(repo_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
