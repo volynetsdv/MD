@@ -115,10 +115,14 @@ static void test_T1_tiling_config_selection()
         TilingConfig cfg = calculate_tiling_params(7680, 4320, 30.0f, 1000);
         TEST_CHECK(cfg.tile_size == 512, "T_calc=550 → M_selected=512");
     }
-    // (d) vram=1000, alt=100 → T_calc = 250 + 1000 = 1250 → M = 640
+    // (d) vram=1000, alt=100 → T_calc = 250 + 1000 = 1250
+    // Standard frame (<5000px): M = 640. Ultra-large frame (>=5000px): adaptively scales to 736
     {
-        TilingConfig cfg = calculate_tiling_params(7680, 4320, 100.0f, 1000);
-        TEST_CHECK(cfg.tile_size == 640, "T_calc=1250 → M_selected=640");
+        TilingConfig cfg_std = calculate_tiling_params(4000, 3000, 100.0f, 1000);
+        TEST_CHECK(cfg_std.tile_size == 640, "T_calc=1250 on standard frame → M_selected=640");
+
+        TilingConfig cfg_8k = calculate_tiling_params(7680, 4320, 100.0f, 1000);
+        TEST_CHECK(cfg_8k.tile_size == 736, "T_calc=1250 on ultra-large 8K frame → M_selected=736");
     }
     // (e) grid covers full 8K frame (no gap)
     {

@@ -1,14 +1,15 @@
-// Standalone test: load a .engine, run one infer pass, verify VRAM cleanup.
-// Usage: ./test_trt_detector <path/to/model.engine>
-// If no path is given (or file missing), the test SKIPs with exit code 0.
+/**
+ * @file test_trt_detector.cpp
+ * @brief Standalone unit tests for TRTDetector engine loading, inference, and VRAM cleanup.
+ */
 
 #include "trt_detector.hpp"
-
-#include <cuda_runtime.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+
+#include <cuda_runtime.h>
 
 namespace
 {

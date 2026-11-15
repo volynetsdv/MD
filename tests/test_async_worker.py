@@ -28,7 +28,13 @@ repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from gui.async_worker import InferenceWorker
+from gui.async_worker import (
+    GlobalDet,
+    InferenceWorker,
+    merge_boundary_detections,
+    py_calculate_containment,
+    py_cluster_diou_nms,
+)
 from src.detector_dispatcher import Detection, UnifiedDetector
 
 
@@ -148,3 +154,49 @@ class TestInferenceWorker:
         detections, elapsed_ms = blocker.args
         assert isinstance(detections, list)
         assert elapsed_ms > 0.0
+
+    def test_containment_ios_suppression(self):
+        """Verify containment / IoS (Intersection over Smaller >= 0.88) suppression.
+
+        Given Box1 (100, 100, 150, 150) and Box2 (110, 110, 50, 50) of the same class:
+        - Classical IoU is < 0.25 (IoU = 1/9 ≈ 0.111).
+        - Containment / IoS is 1.0 (>= 0.88).
+        - Box2 must be suppressed, leaving exactly 1 box (Box1 geometry with absorbed confidence).
+        """
+        box1 = GlobalDet(
+            x=100.0, y=100.0, w=150.0, h=150.0, conf=0.85, class_id=0, tile_id=0
+        )
+        box2 = GlobalDet(
+            x=110.0, y=110.0, w=50.0, h=50.0, conf=0.92, class_id=0, tile_id=1
+        )
+
+        ios = py_calculate_containment(box1, box2)
+        assert ios >= 0.88
+
+        # Test Python fallback implementation
+        res_py = py_cluster_diou_nms([box1, box2], tiles=[], diou_threshold=0.5)
+        assert len(res_py) == 1
+        assert res_py[0].x == pytest.approx(100.0, abs=0.01)
+        assert res_py[0].y == pytest.approx(100.0, abs=0.01)
+        assert res_py[0].w == pytest.approx(150.0, abs=0.01)
+        assert res_py[0].h == pytest.approx(150.0, abs=0.01)
+        assert res_py[0].class_id == 0
+        assert res_py[0].conf == pytest.approx(0.92, abs=0.001)
+
+        # Test merge_boundary_detections (calls C++ pytiling_core if available, fallback otherwise)
+        res_merged = merge_boundary_detections([box1, box2], tiles=[], diou_threshold=0.5)
+        assert len(res_merged) == 1
+        assert res_merged[0].x == pytest.approx(100.0, abs=0.01)
+        assert res_merged[0].y == pytest.approx(100.0, abs=0.01)
+        assert res_merged[0].w == pytest.approx(150.0, abs=0.01)
+        assert res_merged[0].h == pytest.approx(150.0, abs=0.01)
+        assert res_merged[0].class_id == 0
+        assert res_merged[0].conf == pytest.approx(0.92, abs=0.001)
+
+        # Different classes should NOT suppress each other
+        box3 = GlobalDet(
+            x=110.0, y=110.0, w=50.0, h=50.0, conf=0.92, class_id=1, tile_id=1
+        )
+        res_diff = merge_boundary_detections([box1, box3], tiles=[], diou_threshold=0.5)
+        assert len(res_diff) == 2
+

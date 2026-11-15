@@ -96,12 +96,19 @@ def test_onnx_structure_validity(exported_models_dir: Path, sz: int):
     input_tensor = graph.input[0]
     assert input_tensor.name == "images", f"Expected input name 'images', got '{input_tensor.name}'"
 
-    # Validate input dimensions [1, 3, sz, sz]
+    # Validate input dimensions [1, 3, sz, sz] or dynamic batch ['batch', 3, sz, sz]
     dim_values = []
     for d in input_tensor.type.tensor_type.shape.dim:
-        dim_values.append(d.dim_value if d.HasField("dim_value") else None)
+        dim_values.append(
+            d.dim_value
+            if d.HasField("dim_value")
+            else (d.dim_param if d.HasField("dim_param") else None)
+        )
 
-    assert dim_values == [1, 3, sz, sz], f"Input shape mismatch: expected [1, 3, {sz}, {sz}], got {dim_values}"
+    assert dim_values in (
+        [1, 3, sz, sz],
+        ["batch", 3, sz, sz],
+    ), f"Input shape mismatch: expected [1, 3, {sz}, {sz}] or dynamic batch, got {dim_values}"
 
 
 # =============================================================================
@@ -120,8 +127,11 @@ def test_onnxruntime_dummy_tensor_inference(exported_models_dir: Path, sz: int):
     session = ort.InferenceSession(str(onnx_file), providers=["CPUExecutionProvider"])
 
     input_meta = session.get_inputs()[0]
-    assert input_meta.shape == [1, 3, sz, sz], (
-        f"Session input shape mismatch for {sz}: expected [1, 3, {sz}, {sz}], got {input_meta.shape}"
+    assert input_meta.shape in (
+        [1, 3, sz, sz],
+        ["batch", 3, sz, sz],
+    ), (
+        f"Session input shape mismatch for {sz}: expected [1, 3, {sz}, {sz}] or dynamic batch, got {input_meta.shape}"
     )
 
     # Compute expected number of anchor detection candidates

@@ -621,9 +621,13 @@ class CanvasViewer(QGraphicsView):
         self._apply_filters()
         self._emit_visible_count()
 
-    def set_class_names(self, names: Dict[int, str]) -> None:
-        """Update class ID to name dictionary."""
-        self._class_names.update(names)
+    def set_class_names(self, names: Optional[Dict[int, str]]) -> None:
+        """Update class ID to name dictionary with fallback."""
+        if names:
+            self._class_names = {int(k): str(v) for k, v in names.items()}
+        else:
+            self._class_names = dict(DEFAULT_CLASS_NAMES)
+        self._apply_filters()
 
     def _apply_filters(self) -> None:
         """Update visibility of each detection item according to current filters."""

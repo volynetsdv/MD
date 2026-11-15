@@ -28,9 +28,9 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 # Safe import of pytiling_core and UnifiedDetector
 from gui.canvas_viewer import DEFAULT_CLASS_NAMES
-from src.detector_dispatcher import Detection, UnifiedDetector
+from src.detector_dispatcher import Detection, UnifiedDetector, calculate_safe_batch_size
 
-logger = logging.getLogger("InferenceWorker")
+logger = logging.getLogger(__name__)
 
 # Attempt pytiling_core import
 _pytiling_available = False
@@ -40,7 +40,7 @@ try:
     _pytiling_available = True
 except ImportError:
     repo_root = Path(__file__).resolve().parent.parent
-    for cand in [repo_root / "build", repo_root / "build" / "bindings"]:
+    for cand in [repo_root / "build", repo_root / "build" / "Release", repo_root / "build" / "bindings"]:
         if cand.exists() and str(cand) not in sys.path:
             sys.path.insert(0, str(cand))
             try:
@@ -78,6 +78,9 @@ def py_calculate_tiling_params(
     width: int, height: int, altitude: float, vram_mb: int
 ) -> Tuple[int, List[Rect]]:
     """Python fallback for calculate_tiling_params if C++ module is unavailable."""
+    is_ultra_large = width >= 5000 or height >= 5000
+    effective_slice_size = 736 if is_ultra_large else 640
+
     grid = [320, 416, 512, 640]
     t_calc = (vram_mb / 4.0) + (altitude * 10.0)
 
@@ -88,24 +91,33 @@ def py_calculate_tiling_params(
             tile_size = s
             break
 
-    # Overlap clamped [0.1, 0.4]
-    overlap = max(0.1, min(0.4, 0.1 + (altitude / 500.0)))
+    if tile_size == 640 and is_ultra_large:
+        tile_size = effective_slice_size
+
+    # Overlap clamped to [0.15, 0.20]
+    overlap = max(0.15, min(0.20, 0.15 + (altitude / 3000.0)))
     step_x = max(1, int(round(tile_size * (1.0 - overlap))))
     step_y = step_x
 
-    cols = (width + step_x - 1) // step_x
-    rows = (height + step_y - 1) // step_y
+    cols = 1 if width <= tile_size else max(1, int(math.ceil((width - tile_size) / step_x)) + 1)
+    rows = 1 if height <= tile_size else max(1, int(math.ceil((height - tile_size) / step_y)) + 1)
+
+    # Safeguard against excessive tiling on medium frames (max(W, H) <= 1500px)
+    if max(width, height) <= 1500:
+        cols = min(cols, 3)
+        rows = min(rows, 3)
+        if cols * rows > 6:
+            if width <= height:
+                cols = 2
+            else:
+                rows = 2
 
     tiles: List[Rect] = []
     for r in range(rows):
-        y = r * step_y
-        if y >= height:
-            break
+        y = 0 if rows <= 1 else max(0, min(height - tile_size, int(round(r * (height - tile_size) / (rows - 1)))))
         h = min(tile_size, height - y)
         for c in range(cols):
-            x = c * step_x
-            if x >= width:
-                break
+            x = 0 if cols <= 1 else max(0, min(width - tile_size, int(round(c * (width - tile_size) / (cols - 1)))))
             w = min(tile_size, width - x)
             tiles.append(Rect(x=x, y=y, w=w, h=h))
 
@@ -149,6 +161,25 @@ def py_calculate_diou(a: GlobalDet, b: GlobalDet) -> float:
     return iou - (d2 / c2)
 
 
+def py_calculate_containment(a: GlobalDet, b: GlobalDet) -> float:
+    """Calculate containment ratio (Intersection over Smaller / IoS) between two detections."""
+    x1 = max(a.x, b.x)
+    y1 = max(a.y, b.y)
+    x2 = min(a.x + a.w, b.x + b.w)
+    y2 = min(a.y + a.h, b.y + b.h)
+
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter_area = inter_w * inter_h
+
+    area_a = a.w * a.h
+    area_b = b.w * b.h
+    min_area = min(area_a, area_b)
+    if min_area <= 1e-7:
+        return 0.0
+    return inter_area / min_area
+
+
 def py_cluster_diou_nms(
     detections: List[GlobalDet],
     tiles: List[Any],
@@ -173,6 +204,70 @@ def py_cluster_diou_nms(
 
     for cls in classes:
         cls_boxes = [d for d in candidates if d.class_id == cls]
+
+        # --- Containment / IoS Suppression & Asymmetric Weak Part Suppression ---
+        num_cls = len(cls_boxes)
+        if num_cls > 1:
+            ios_suppressed = [False] * num_cls
+            for i in range(num_cls):
+                if ios_suppressed[i]:
+                    continue
+                area_i = cls_boxes[i].w * cls_boxes[i].h
+                if area_i <= 1e-7:
+                    ios_suppressed[i] = True
+                    continue
+
+                for j in range(i + 1, num_cls):
+                    if ios_suppressed[j]:
+                        continue
+                    area_j = cls_boxes[j].w * cls_boxes[j].h
+                    if area_j <= 1e-7:
+                        ios_suppressed[j] = True
+                        continue
+
+                    containment = py_calculate_containment(cls_boxes[i], cls_boxes[j])
+                    min_area = min(area_i, area_j)
+                    max_area = max(area_i, area_j)
+
+                    # Step 2.2: Fast cross-tile containment (IoS >= 0.72)
+                    is_containment = containment >= 0.72 and min_area <= 0.85 * max_area
+
+                    # Step 2.3: Asymmetric weak part suppression (IoS >= 0.50 and conf_weak <= 0.55 * conf_strong)
+                    conf_i = cls_boxes[i].conf
+                    conf_j = cls_boxes[j].conf
+                    is_asymmetric_weak = False
+                    if containment >= 0.50:
+                        if conf_i <= 0.55 * conf_j:
+                            is_asymmetric_weak = True
+                        elif conf_j <= 0.55 * conf_i:
+                            is_asymmetric_weak = True
+
+                    if is_containment or is_asymmetric_weak:
+                        # Step 3: Envelope Union coordinate expansion
+                        min_x = min(cls_boxes[i].x, cls_boxes[j].x)
+                        min_y = min(cls_boxes[i].y, cls_boxes[j].y)
+                        max_x = max(cls_boxes[i].x + cls_boxes[i].w, cls_boxes[j].x + cls_boxes[j].w)
+                        max_y = max(cls_boxes[i].y + cls_boxes[i].h, cls_boxes[j].y + cls_boxes[j].h)
+                        max_conf = max(conf_i, conf_j)
+
+                        if area_i < area_j or (is_asymmetric_weak and conf_i <= 0.55 * conf_j):
+                            cls_boxes[j].x = min_x
+                            cls_boxes[j].y = min_y
+                            cls_boxes[j].w = max_x - min_x
+                            cls_boxes[j].h = max_y - min_y
+                            cls_boxes[j].conf = max_conf
+                            ios_suppressed[i] = True
+                            break
+                        else:
+                            cls_boxes[i].x = min_x
+                            cls_boxes[i].y = min_y
+                            cls_boxes[i].w = max_x - min_x
+                            cls_boxes[i].h = max_y - min_y
+                            cls_boxes[i].conf = max_conf
+                            ios_suppressed[j] = True
+
+            cls_boxes = [cls_boxes[k] for k in range(num_cls) if not ios_suppressed[k]]
+
         cls_boxes.sort(key=lambda x: x.conf, reverse=True)
 
         n = len(cls_boxes)
@@ -236,9 +331,34 @@ def py_cluster_diou_nms(
             c2 = (enc_x2 - enc_x1) ** 2 + (enc_y2 - enc_y1) ** 2
 
             diou = np.where(c2 > 1e-7, iou - (d2 / c2), iou)
-            to_suppress = sub_idx[diou >= diou_threshold]
+
+            # Adaptive threshold for seam candidates originating from different tiles
+            curr_tile = cls_boxes[i].tile_id
+            sub_tiles = np.array([cls_boxes[k].tile_id for k in sub_idx], dtype=np.int32)
+            diff_tiles = (curr_tile >= 0) & (sub_tiles >= 0) & (sub_tiles != curr_tile)
+            if np.any(diff_tiles):
+                ratio = np.clip(np.where(c2 > 1e-7, d2 / c2, 1.0), 0.0, 1.0)
+                eff_thresh = np.where(diff_tiles, diou_threshold * (0.70 + 0.30 * ratio), diou_threshold)
+            else:
+                eff_thresh = diou_threshold
+
+            to_suppress = sub_idx[diou >= eff_thresh]
             if to_suppress.size > 0:
                 suppressed[to_suppress] = True
+                # Step 3: Envelope Union expansion across seams
+                curr_b = cls_boxes[i]
+                for s_idx in to_suppress:
+                    sup_b = cls_boxes[s_idx]
+                    if sup_b.tile_id != curr_b.tile_id:
+                        min_x = min(curr_b.x, sup_b.x)
+                        min_y = min(curr_b.y, sup_b.y)
+                        max_x = max(curr_b.x + curr_b.w, sup_b.x + sup_b.w)
+                        max_y = max(curr_b.y + curr_b.h, sup_b.y + sup_b.h)
+                        curr_b.x = min_x
+                        curr_b.y = min_y
+                        curr_b.w = max_x - min_x
+                        curr_b.h = max_y - min_y
+                        curr_b.conf = max(curr_b.conf, sup_b.conf)
 
     return result
 
@@ -274,6 +394,10 @@ class InferenceWorker(QThread):
         detector: Optional[UnifiedDetector] = None,
         is_mock: bool = False,
         parent: Optional[QObject] = None,
+        class_names: Optional[Dict[int, str]] = None,
+        is_turbo: bool = False,
+        turbo_mode: Optional[bool] = None,
+        turbo_max_cap: int = 8,
     ) -> None:
         super().__init__(parent)
         self.image_source = image_source
@@ -283,8 +407,22 @@ class InferenceWorker(QThread):
         self.diou_threshold = float(diou_threshold)
         self.detector = detector
         self.is_mock = is_mock
+        self.class_names = dict(class_names) if class_names else None
+        self.is_turbo = bool(turbo_mode) if turbo_mode is not None else bool(is_turbo)
+        self.turbo_max_cap = int(turbo_max_cap)
 
         self._is_cancelled: bool = False
+
+    def get_class_names(self) -> Dict[int, str]:
+        """Retrieve active class ID to name dictionary with fallback."""
+        if self.class_names:
+            return dict(self.class_names)
+        if self.detector is not None and hasattr(self.detector, "get_class_names"):
+            try:
+                return self.detector.get_class_names()
+            except Exception:
+                pass
+        return dict(DEFAULT_CLASS_NAMES)
 
     def cancel(self) -> None:
         """Request thread cancellation."""
@@ -293,27 +431,6 @@ class InferenceWorker(QThread):
 
     def is_cancelled(self) -> bool:
         return self._is_cancelled
-
-    def _format_results_for_gui(self, detections: list) -> list:
-        """
-        Форматує результати виявлення (список об'єктів або словників)
-        у стандартизований формат для передачі у CanvasViewer та таблицю цілей.
-        """
-        formatted = []
-        for det in detections:
-            if isinstance(det, dict):
-                formatted.append(det)
-            elif hasattr(det, "to_dict"):
-                formatted.append(det.to_dict())
-            elif isinstance(det, (list, tuple)) and len(det) >= 6:
-                # Формат: [x1, y1, x2, y2, conf, class_id]
-                x1, y1, x2, y2, conf, cls_id = det[:6]
-                formatted.append({
-                    "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-                    "confidence": float(conf),
-                    "class_id": int(cls_id)
-                })
-        return formatted
 
     def run(self) -> None:
         """Execute image loading, tiling, inference, offset remapping, and NMS."""
@@ -340,81 +457,160 @@ class InferenceWorker(QThread):
                 self.error_occurred.emit("Помилка генерації сітки плиток: отримано 0 тайлів.")
                 return
 
+            model_size = 640 if tile_size == 736 else tile_size
+
             logger.info(
-                "InferenceWorker: Generated %d tiles with model size %d (Alt: %.1fm, VRAM: %dMB).",
+                "InferenceWorker: Generated %d tiles with tile size %d (model size %d, Alt: %.1fm, VRAM: %dMB).",
                 total_tiles,
                 tile_size,
+                model_size,
                 self.altitude,
                 self.vram_mb,
             )
             self.progress_changed.emit(
                 0,
                 total_tiles,
-                f"Розраховано сітку: {total_tiles} тайлів (модель yolo_{tile_size}). Початок детекції...",
+                f"Розраховано сітку: {total_tiles} тайлів (модель yolo_{model_size}). Початок детекції...",
             )
 
             # 3. Initialize Unified Detector if not provided
             if self.detector is None:
                 self.detector = UnifiedDetector()
 
-            # 4. Sequentially process tiles
+            # 4. Calculate safe batch size and process tiles
+            batch_size = calculate_safe_batch_size(
+                target_tile_size=model_size,
+                is_turbo=self.is_turbo,
+                max_cap=self.turbo_max_cap,
+            )
+
+            try:
+                import torch
+                cuda_avail = torch.cuda.is_available()
+            except Exception:
+                torch = None
+                cuda_avail = False
+
+            can_use_cuda_slicer = (
+                not self.is_mock
+                and _pytiling_available
+                and getattr(pytiling_core, "HAVE_CUDA", False)
+                and cuda_avail
+                and self.detector is not None
+                and self.detector.is_gpu_accelerated
+            )
+
+            d_img = None
+            if can_use_cuda_slicer:
+                try:
+                    d_img = torch.as_tensor(img, device="cuda")
+                except Exception as exc:
+                    logger.warning("InferenceWorker: Failed to upload image to GPU: %s. Using CPU fallback.", exc)
+                    can_use_cuda_slicer = False
+                    d_img = None
+
             all_global_detections: List[Any] = []
 
-            for idx, tile in enumerate(tiles):
+            for batch_start in range(0, total_tiles, batch_size):
                 if self._is_cancelled:
-                    logger.info("InferenceWorker: Process stopped at tile %d/%d.", idx, total_tiles)
+                    logger.info("InferenceWorker: Process stopped at tile %d/%d.", batch_start, total_tiles)
                     self.progress_changed.emit(
-                        idx, total_tiles, "Детекцію зупинено оператором."
+                        batch_start, total_tiles, "Детекцію зупинено оператором."
                     )
+                    del d_img
                     return
 
-                # Zero-Copy slice from image buffer
-                tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
-                tile_slice = img[ty : ty + th, tx : tx + tw]
+                batch_tiles = tiles[batch_start : batch_start + batch_size]
 
-                # Run inference on tile
-                tile_dets = []
                 if self.is_mock:
-                    # In mock testing mode, check intersection with synthetic targets
-                    scale_x = float(tile_size) / float(tile.w)
-                    scale_y = float(tile_size) / float(tile.h)
-                    for st in SYNTHETIC_TARGETS:
-                        if (
-                            st["gx"] + st["gw"] > tile.x
-                            and st["gx"] < tile.x + tile.w
-                            and st["gy"] + st["gh"] > tile.y
-                            and st["gy"] < tile.y + tile.h
-                        ):
-                            tile_dets.append(
-                                Detection(
-                                    x_local=(st["gx"] - float(tile.x)) * scale_x,
-                                    y_local=(st["gy"] - float(tile.y)) * scale_y,
-                                    w=st["gw"] * scale_x,
-                                    h=st["gh"] * scale_y,
-                                    conf=st["conf"],
-                                    class_id=st["class_id"],
+                    batch_dets = []
+                    for tile in batch_tiles:
+                        tile_dets = []
+                        scale_x = float(model_size) / float(tile.w)
+                        scale_y = float(model_size) / float(tile.h)
+                        for st in SYNTHETIC_TARGETS:
+                            if (
+                                st["gx"] + st["gw"] > tile.x
+                                and st["gx"] < tile.x + tile.w
+                                and st["gy"] + st["gh"] > tile.y
+                                and st["gy"] < tile.y + tile.h
+                            ):
+                                tile_dets.append(
+                                    Detection(
+                                        x_local=(st["gx"] - float(tile.x)) * scale_x,
+                                        y_local=(st["gy"] - float(tile.y)) * scale_y,
+                                        w=st["gw"] * scale_x,
+                                        h=st["gh"] * scale_y,
+                                        conf=st["conf"],
+                                        class_id=st["class_id"],
+                                    )
                                 )
-                            )
-                    # Short sleep for UI animation pacing
+                        batch_dets.append(tile_dets)
                     time.sleep(0.002)
-                else:
-                    tile_dets = self.detector.predict_tile(
-                        tile_slice,
-                        tile_size=tile_size,
+                elif can_use_cuda_slicer and d_img is not None:
+                    d_batch = torch.empty(
+                        (len(batch_tiles), 3, model_size, model_size),
+                        dtype=torch.float32,
+                        device="cuda",
+                    )
+                    pytiling_core.extract_batch_tiles_gpu(
+                        d_img.data_ptr(),
+                        img_w * 3,
+                        img_w,
+                        img_h,
+                        batch_tiles,
+                        model_size,
+                        d_batch.data_ptr(),
+                        False,  # img is already RGB
+                        0,
+                    )
+                    batch_dets = self.detector.predict_batch(
+                        d_batch,
+                        tile_size=model_size,
                         conf_threshold=self.conf_threshold,
                     )
+                else:
+                    batch_slices = []
+                    for tile in batch_tiles:
+                        tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
+                        tile_slice = img[ty : ty + th, tx : tx + tw]
+                        if tw == 736 and th == 736:
+                            tile_slice = cv2.resize(
+                                tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+                            )
+                        batch_slices.append(tile_slice)
 
-                # Immediately release tile view
-                del tile_slice
+                    if len(batch_slices) == 1:
+                        single_dets = self.detector.predict_tile(
+                            batch_slices[0],
+                            tile_size=model_size,
+                            conf_threshold=self.conf_threshold,
+                        )
+                        batch_dets = [single_dets]
+                    else:
+                        batch_dets = self.detector.predict_batch(
+                            batch_slices,
+                            tile_size=model_size,
+                            conf_threshold=self.conf_threshold,
+                        )
 
-                # Remap tile-local detections to global frame coordinates
-                for d in tile_dets:
-                    global_det = self._remap_detection(d, tile, tile_size, idx)
-                    all_global_detections.append(global_det)
+                    del batch_slices
 
-                # Real-time progress signal
-                status_msg = f"Обробка тайла {idx + 1}/{total_tiles} (знайдено: {len(all_global_detections)})..."
-                self.progress_changed.emit(idx + 1, total_tiles, status_msg)
+                for i, (tile, tdets) in enumerate(zip(batch_tiles, batch_dets)):
+                    tile_global_idx = batch_start + i
+                    for d in tdets:
+                        global_det = self._remap_detection(d, tile, model_size, tile_global_idx)
+                        all_global_detections.append(global_det)
+
+                del batch_dets
+
+                curr_done = min(batch_start + len(batch_tiles), total_tiles)
+                mode_str = f"Turbo [B={len(batch_tiles)}]" if self.is_turbo and len(batch_tiles) > 1 else "Standard [B=1]"
+                t_label = "тайла" if len(batch_tiles) == 1 else "тайлів"
+                status_msg = f"Обробка {t_label} {curr_done}/{total_tiles} ({mode_str}, знайдено: {len(all_global_detections)})..."
+                self.progress_changed.emit(curr_done, total_tiles, status_msg)
+
+            del d_img
 
             if self._is_cancelled:
                 return
@@ -554,7 +750,7 @@ class InferenceWorker(QThread):
 
     def _format_results_for_gui(self, detections: List[Any]) -> List[Dict[str, Any]]:
         """Convert global detection objects to clean dictionary representations."""
-        return format_detections_for_gui(detections)
+        return format_detections_for_gui(detections, class_names=self.get_class_names())
 
 
 def calculate_tiles_for_image(
@@ -656,13 +852,17 @@ def merge_boundary_detections(
     )
 
 
-def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
+def format_detections_for_gui(
+    detections: List[Any],
+    class_names: Optional[Dict[int, str]] = None,
+) -> List[Dict[str, Any]]:
     """Convert global detection objects to clean dictionary representations."""
+    active_names = class_names if class_names is not None else DEFAULT_CLASS_NAMES
     results: List[Dict[str, Any]] = []
     for i, det in enumerate(detections):
         if isinstance(det, dict):
             class_id = int(det.get("class_id", 0))
-            class_name = str(det.get("class_name", DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")))
+            class_name = str(det.get("class_name", active_names.get(class_id, f"Клас {class_id}")))
             conf = float(det.get("confidence", det.get("conf", 0.0)))
             if "bbox" in det and isinstance(det["bbox"], (list, tuple)) and len(det["bbox"]) == 4:
                 x = round(float(det["bbox"][0]), 2)
@@ -674,9 +874,27 @@ def format_detections_for_gui(detections: List[Any]) -> List[Dict[str, Any]]:
                 y = round(float(det.get("y", 0.0)), 2)
                 w = round(float(det.get("w", 0.0)), 2)
                 h = round(float(det.get("h", 0.0)), 2)
+        elif hasattr(det, "to_dict"):
+            d_dict = det.to_dict()
+            class_id = int(d_dict.get("class_id", 0))
+            class_name = str(d_dict.get("class_name", active_names.get(class_id, f"Клас {class_id}")))
+            conf = float(d_dict.get("confidence", d_dict.get("conf", 0.0)))
+            x = round(float(d_dict.get("x", 0.0)), 2)
+            y = round(float(d_dict.get("y", 0.0)), 2)
+            w = round(float(d_dict.get("w", 0.0)), 2)
+            h = round(float(d_dict.get("h", 0.0)), 2)
+        elif isinstance(det, (list, tuple)) and len(det) >= 6:
+            x1, y1, x2, y2, conf_val, cls_id = det[:6]
+            class_id = int(cls_id)
+            class_name = active_names.get(class_id, f"Клас {class_id}")
+            x = round(float(x1), 2)
+            y = round(float(y1), 2)
+            w = round(float(x2 - x1), 2)
+            h = round(float(y2 - y1), 2)
+            conf = float(conf_val)
         else:
             class_id = int(det.class_id)
-            class_name = DEFAULT_CLASS_NAMES.get(class_id, f"Клас {class_id}")
+            class_name = active_names.get(class_id, f"Клас {class_id}")
             x = round(float(det.x), 2)
             y = round(float(det.y), 2)
             w = round(float(det.w), 2)
@@ -710,6 +928,10 @@ def run_tiled_inference(
     is_mock: bool = False,
     is_cancelled_fn: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    class_names: Optional[Dict[int, str]] = None,
+    is_turbo: bool = False,
+    turbo_mode: Optional[bool] = None,
+    turbo_max_cap: int = 8,
 ) -> List[Dict[str, Any]]:
     """Execute complete tiled detection pipeline on an image buffer."""
     img_h, img_w = img_rgb.shape[:2]
@@ -718,57 +940,150 @@ def run_tiled_inference(
     if total_tiles == 0:
         return []
 
+    model_size = 640 if tile_size == 736 else tile_size
+
     if detector is None:
         detector = UnifiedDetector()
 
-    all_global_detections: List[Any] = []
-    for idx, tile in enumerate(tiles):
-        tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
-        tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
+    turbo_active = bool(turbo_mode) if turbo_mode is not None else bool(is_turbo)
+    batch_size = calculate_safe_batch_size(
+        target_tile_size=model_size,
+        is_turbo=turbo_active,
+        max_cap=turbo_max_cap,
+    )
 
-        tile_dets = []
+    try:
+        import torch
+        cuda_avail = torch.cuda.is_available()
+    except Exception:
+        torch = None
+        cuda_avail = False
+
+    can_use_cuda_slicer = (
+        not is_mock
+        and _pytiling_available
+        and getattr(pytiling_core, "HAVE_CUDA", False)
+        and cuda_avail
+        and detector is not None
+        and detector.is_gpu_accelerated
+    )
+
+    d_img = None
+    if can_use_cuda_slicer:
+        try:
+            d_img = torch.as_tensor(img_rgb, device="cuda")
+        except Exception:
+            can_use_cuda_slicer = False
+            d_img = None
+
+    all_global_detections: List[Any] = []
+    for batch_start in range(0, total_tiles, batch_size):
+        if is_cancelled_fn and is_cancelled_fn():
+            break
+
+        batch_tiles = tiles[batch_start : batch_start + batch_size]
+
         if is_mock:
-            scale_x = float(tile_size) / float(tile.w)
-            scale_y = float(tile_size) / float(tile.h)
-            for st in SYNTHETIC_TARGETS:
-                if (
-                    st["gx"] + st["gw"] > tile.x
-                    and st["gx"] < tile.x + tile.w
-                    and st["gy"] + st["gh"] > tile.y
-                    and st["gy"] < tile.y + tile.h
-                ):
-                    tile_dets.append(
-                        Detection(
-                            x_local=(st["gx"] - float(tile.x)) * scale_x,
-                            y_local=(st["gy"] - float(tile.y)) * scale_y,
-                            w=st["gw"] * scale_x,
-                            h=st["gh"] * scale_y,
-                            conf=st["conf"],
-                            class_id=st["class_id"],
+            batch_dets = []
+            for tile in batch_tiles:
+                tile_dets = []
+                scale_x = float(model_size) / float(tile.w)
+                scale_y = float(model_size) / float(tile.h)
+                for st in SYNTHETIC_TARGETS:
+                    if (
+                        st["gx"] + st["gw"] > tile.x
+                        and st["gx"] < tile.x + tile.w
+                        and st["gy"] + st["gh"] > tile.y
+                        and st["gy"] < tile.y + tile.h
+                    ):
+                        tile_dets.append(
+                            Detection(
+                                x_local=(st["gx"] - float(tile.x)) * scale_x,
+                                y_local=(st["gy"] - float(tile.y)) * scale_y,
+                                w=st["gw"] * scale_x,
+                                h=st["gh"] * scale_y,
+                                conf=st["conf"],
+                                class_id=st["class_id"],
+                            )
                         )
-                    )
+                batch_dets.append(tile_dets)
             time.sleep(0.002)
-        else:
-            tile_dets = detector.predict_tile(
-                tile_slice,
-                tile_size=tile_size,
+        elif can_use_cuda_slicer and d_img is not None:
+            d_batch = torch.empty(
+                (len(batch_tiles), 3, model_size, model_size),
+                dtype=torch.float32,
+                device="cuda",
+            )
+            pytiling_core.extract_batch_tiles_gpu(
+                d_img.data_ptr(),
+                img_w * 3,
+                img_w,
+                img_h,
+                batch_tiles,
+                model_size,
+                d_batch.data_ptr(),
+                False,  # img_rgb is already RGB
+                0,
+            )
+            batch_dets = detector.predict_batch(
+                d_batch,
+                tile_size=model_size,
                 conf_threshold=conf_threshold,
             )
+        else:
+            batch_slices = []
+            for tile in batch_tiles:
+                tx, ty, tw, th = tile.x, tile.y, tile.w, tile.h
+                tile_slice = img_rgb[ty : ty + th, tx : tx + tw]
+                if tw == 736 and th == 736:
+                    tile_slice = cv2.resize(
+                        tile_slice, (640, 640), interpolation=cv2.INTER_LINEAR
+                    )
+                batch_slices.append(tile_slice)
 
-        del tile_slice
+            if len(batch_slices) == 1:
+                single_dets = detector.predict_tile(
+                    batch_slices[0],
+                    tile_size=model_size,
+                    conf_threshold=conf_threshold,
+                )
+                batch_dets = [single_dets]
+            else:
+                batch_dets = detector.predict_batch(
+                    batch_slices,
+                    tile_size=model_size,
+                    conf_threshold=conf_threshold,
+                )
 
-        for d in tile_dets:
-            global_det = remap_detection_to_global(d, tile, tile_size, idx)
-            all_global_detections.append(global_det)
+            del batch_slices
+
+        for i, (tile, tdets) in enumerate(zip(batch_tiles, batch_dets)):
+            tile_global_idx = batch_start + i
+            for d in tdets:
+                global_det = remap_detection_to_global(d, tile, model_size, tile_global_idx)
+                all_global_detections.append(global_det)
+
+        del batch_dets
 
         if progress_callback:
-            status_msg = f"Обробка тайла {idx + 1}/{total_tiles} (знайдено: {len(all_global_detections)})..."
-            progress_callback(idx + 1, total_tiles, status_msg)
+            curr_done = min(batch_start + len(batch_tiles), total_tiles)
+            mode_str = f"Turbo [B={len(batch_tiles)}]" if turbo_active and len(batch_tiles) > 1 else "Standard [B=1]"
+            t_label = "тайла" if len(batch_tiles) == 1 else "тайлів"
+            status_msg = f"Обробка {t_label} {curr_done}/{total_tiles} ({mode_str}, знайдено: {len(all_global_detections)})..."
+            progress_callback(curr_done, total_tiles, status_msg)
+
+    del d_img
 
     merged_detections = merge_boundary_detections(
         all_global_detections, tiles, diou_threshold=diou_threshold, conf_threshold=conf_threshold
     )
-    return format_detections_for_gui(merged_detections)
+    cnames = class_names
+    if cnames is None and detector is not None and hasattr(detector, "get_class_names"):
+        try:
+            cnames = detector.get_class_names()
+        except Exception:
+            pass
+    return format_detections_for_gui(merged_detections, class_names=cnames)
 
 
 # Re-export BatchTriageWorker for convenience

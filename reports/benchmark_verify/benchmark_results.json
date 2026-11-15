@@ -1,0 +1,1204 @@
+{
+  "metadata": {
+    "timestamp": "2026-11-15T16:03:47.873014+00:00",
+    "hardware": {
+      "os": "Linux 7.3.1-202.nobara.fc44.x86_64 (x86_64)",
+      "python_version": "3.12.3",
+      "cpu_count_logical": 12,
+      "cpu_count_physical": 6,
+      "total_ram_gb": 46.95,
+      "gpu_available": true,
+      "gpu_name": "NVIDIA GeForce RTX 5070 Ti",
+      "gpu_vram_mb": 15838.8,
+      "cuda_version": "13.0",
+      "onnxruntime_providers": [
+        "TensorrtExecutionProvider",
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ]
+    },
+    "backend": "TensorRTBackend",
+    "classes_count": 16,
+    "mode": "both"
+  },
+  "config": {
+    "input_path": null,
+    "output_detected_dir": null,
+    "samples": 20,
+    "altitude": 150.0,
+    "vram_mb": 2048,
+    "conf_thresh": 0.25,
+    "diou_thresh": 0.5,
+    "monitor_interval_sec": 0.1,
+    "leak_check_iterations": 50,
+    "eval_accuracy": false,
+    "gt_labels_dir": null,
+    "iou_eval_threshold": 0.5,
+    "mode": "both",
+    "turbo_max_cap": 8
+  },
+  "standard_mode": {
+    "is_turbo": false,
+    "mean_batch_size": 1.0,
+    "system_resource_telemetry": {
+      "baseline": {
+        "rss_ram_mb": 1303.86,
+        "sys_ram_mb": 23839.1,
+        "vram_alloc_mb": 5562.38,
+        "vram_reserved_mb": 46.0
+      },
+      "final": {
+        "rss_ram_mb": 1304.96,
+        "sys_ram_mb": 24071.89,
+        "vram_alloc_mb": 5870.12,
+        "vram_reserved_mb": 384.0
+      },
+      "delta": {
+        "rss_ram_mb": 1.11,
+        "vram_alloc_mb": 307.75,
+        "vram_reserved_mb": 338.0
+      },
+      "stats": {
+        "rss_ram_mb": {
+          "mean": 1334.28,
+          "std": 97.97,
+          "min": 1296.3,
+          "max": 1672.15,
+          "p50": 1304.81,
+          "p90": 1304.98,
+          "p99": 1668.17
+        },
+        "vram_alloc_mb": {
+          "mean": 5776.1,
+          "std": 127.36,
+          "min": 5556.94,
+          "max": 5877.81,
+          "p50": 5869.62,
+          "p90": 5876.56,
+          "p99": 5877.81
+        },
+        "vram_reserved_mb": {
+          "mean": 285.53,
+          "std": 131.16,
+          "min": 46.0,
+          "max": 384.0,
+          "p50": 384.0,
+          "p90": 384.0,
+          "p99": 384.0
+        },
+        "gpu_compute_util_pct": {
+          "mean": 57.13,
+          "std": 34.49,
+          "min": 4.0,
+          "max": 87.0,
+          "p50": 83.5,
+          "p90": 86.9,
+          "p99": 87.0
+        },
+        "cpu_util_pct": {
+          "mean": 21.43,
+          "std": 8.08,
+          "min": 0.0,
+          "max": 70.6,
+          "p50": 19.6,
+          "p90": 30.97,
+          "p99": 47.02
+        }
+      },
+      "memory_leak_check": {
+        "delta_rss_mb": 1.11,
+        "threshold_mb": 50.0,
+        "status": "PASS [OK]"
+      },
+      "samples_count": 222
+    },
+    "batch_summary": null,
+    "benchmarks": {
+      "4K": {
+        "resolution": [
+          3840,
+          2160
+        ],
+        "tile_size": 640,
+        "tile_count": 32,
+        "tile_count_baseline_640": 60,
+        "tile_reduction_percent": 46.67,
+        "targets_detected": 6,
+        "stage_latencies_ms": {
+          "T_read": {
+            "mean": 12.64,
+            "std": 1.12,
+            "min": 9.64,
+            "max": 14.72,
+            "p50": 12.57,
+            "p90": 14.24,
+            "p99": 14.7
+          },
+          "T_tiling": {
+            "mean": 0.05,
+            "std": 0.01,
+            "min": 0.04,
+            "max": 0.06,
+            "p50": 0.05,
+            "p90": 0.06,
+            "p99": 0.06
+          },
+          "T_slice": {
+            "mean": 2.03,
+            "std": 0.24,
+            "min": 1.75,
+            "max": 2.59,
+            "p50": 1.97,
+            "p90": 2.35,
+            "p99": 2.56
+          },
+          "T_infer": {
+            "mean": 72.35,
+            "std": 0.4,
+            "min": 71.49,
+            "max": 73.17,
+            "p50": 72.34,
+            "p90": 72.8,
+            "p99": 73.11
+          },
+          "T_remap": {
+            "mean": 0.03,
+            "std": 0.0,
+            "min": 0.03,
+            "max": 0.04,
+            "p50": 0.03,
+            "p90": 0.04,
+            "p99": 0.04
+          },
+          "T_nms": {
+            "mean": 61.38,
+            "std": 2.41,
+            "min": 57.13,
+            "max": 65.85,
+            "p50": 61.26,
+            "p90": 64.53,
+            "p99": 65.79
+          },
+          "T_io_write": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p99": 0.0
+          },
+          "T_total": {
+            "mean": 149.57,
+            "std": 3.62,
+            "min": 141.9,
+            "max": 156.85,
+            "p50": 149.35,
+            "p90": 153.61,
+            "p99": 156.59
+          }
+        },
+        "fps": {
+          "mean": 6.69,
+          "p50": 6.7
+        },
+        "pcie_efficiency": {
+          "frame_raster_mb": 23.73,
+          "h2d_stream_mb": 23.73,
+          "d2h_zero_readback_kb": 0.188,
+          "d2h_traditional_readback_mb": 23.73,
+          "readback_reduction_percent": 99.9992,
+          "total_bus_reduction_percent": 50.0
+        }
+      },
+      "8K": {
+        "resolution": [
+          7680,
+          4320
+        ],
+        "tile_size": 736,
+        "tile_count": 104,
+        "tile_count_baseline_640": 240,
+        "tile_reduction_percent": 56.67,
+        "targets_detected": 42,
+        "stage_latencies_ms": {
+          "T_read": {
+            "mean": 47.13,
+            "std": 1.43,
+            "min": 45.55,
+            "max": 50.77,
+            "p50": 46.8,
+            "p90": 49.29,
+            "p99": 50.58
+          },
+          "T_tiling": {
+            "mean": 0.1,
+            "std": 0.01,
+            "min": 0.09,
+            "max": 0.13,
+            "p50": 0.09,
+            "p90": 0.1,
+            "p99": 0.13
+          },
+          "T_slice": {
+            "mean": 8.37,
+            "std": 0.39,
+            "min": 7.87,
+            "max": 9.22,
+            "p50": 8.31,
+            "p90": 8.94,
+            "p99": 9.21
+          },
+          "T_infer": {
+            "mean": 235.88,
+            "std": 1.46,
+            "min": 233.61,
+            "max": 240.53,
+            "p50": 235.59,
+            "p90": 237.08,
+            "p99": 239.9
+          },
+          "T_remap": {
+            "mean": 0.14,
+            "std": 0.02,
+            "min": 0.12,
+            "max": 0.23,
+            "p50": 0.13,
+            "p90": 0.15,
+            "p99": 0.22
+          },
+          "T_nms": {
+            "mean": 58.8,
+            "std": 2.49,
+            "min": 53.44,
+            "max": 61.85,
+            "p50": 59.58,
+            "p90": 61.46,
+            "p99": 61.84
+          },
+          "T_io_write": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p99": 0.0
+          },
+          "T_total": {
+            "mean": 351.1,
+            "std": 3.94,
+            "min": 343.07,
+            "max": 358.27,
+            "p50": 351.0,
+            "p90": 355.22,
+            "p99": 358.13
+          }
+        },
+        "fps": {
+          "mean": 2.85,
+          "p50": 2.85
+        },
+        "pcie_efficiency": {
+          "frame_raster_mb": 94.92,
+          "h2d_stream_mb": 94.92,
+          "d2h_zero_readback_kb": 1.312,
+          "d2h_traditional_readback_mb": 94.92,
+          "readback_reduction_percent": 99.9986,
+          "total_bus_reduction_percent": 50.0
+        }
+      },
+      "13K": {
+        "resolution": [
+          13000,
+          6500
+        ],
+        "tile_size": 736,
+        "tile_count": 242,
+        "tile_count_baseline_640": 578,
+        "tile_reduction_percent": 58.13,
+        "targets_detected": 105,
+        "stage_latencies_ms": {
+          "T_read": {
+            "mean": 117.07,
+            "std": 3.43,
+            "min": 114.24,
+            "max": 127.92,
+            "p50": 115.93,
+            "p90": 121.3,
+            "p99": 127.07
+          },
+          "T_tiling": {
+            "mean": 0.15,
+            "std": 0.01,
+            "min": 0.14,
+            "max": 0.19,
+            "p50": 0.15,
+            "p90": 0.17,
+            "p99": 0.18
+          },
+          "T_slice": {
+            "mean": 21.26,
+            "std": 1.29,
+            "min": 19.87,
+            "max": 25.71,
+            "p50": 21.05,
+            "p90": 21.95,
+            "p99": 25.3
+          },
+          "T_infer": {
+            "mean": 550.11,
+            "std": 8.32,
+            "min": 544.07,
+            "max": 583.95,
+            "p50": 548.25,
+            "p90": 551.84,
+            "p99": 579.17
+          },
+          "T_remap": {
+            "mean": 0.27,
+            "std": 0.01,
+            "min": 0.26,
+            "max": 0.32,
+            "p50": 0.27,
+            "p90": 0.29,
+            "p99": 0.31
+          },
+          "T_nms": {
+            "mean": 59.43,
+            "std": 1.76,
+            "min": 55.02,
+            "max": 62.08,
+            "p50": 59.66,
+            "p90": 61.35,
+            "p99": 61.99
+          },
+          "T_io_write": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p99": 0.0
+          },
+          "T_total": {
+            "mean": 749.41,
+            "std": 10.88,
+            "min": 738.85,
+            "max": 789.67,
+            "p50": 746.09,
+            "p90": 758.86,
+            "p99": 784.76
+          }
+        },
+        "fps": {
+          "mean": 1.33,
+          "p50": 1.34
+        },
+        "pcie_efficiency": {
+          "frame_raster_mb": 241.76,
+          "h2d_stream_mb": 241.76,
+          "d2h_zero_readback_kb": 3.281,
+          "d2h_traditional_readback_mb": 241.76,
+          "readback_reduction_percent": 99.9987,
+          "total_bus_reduction_percent": 50.0
+        }
+      }
+    },
+    "accuracy_metrics": null,
+    "per_frame_records": [],
+    "memory_leak_audit": {
+      "iterations": 50,
+      "test_resolution": "3840x2160",
+      "initial_rss_mb": 1304.98,
+      "final_rss_mb": 1303.12,
+      "delta_rss_mb": -1.85,
+      "initial_vram_mb": 5406.0,
+      "final_vram_mb": 5406.0,
+      "delta_vram_mb": 0.0,
+      "leak_detected": false,
+      "status": "PASS [OK]"
+    }
+  },
+  "turbo_mode": {
+    "is_turbo": true,
+    "mean_batch_size": 8.0,
+    "system_resource_telemetry": {
+      "baseline": {
+        "rss_ram_mb": 1303.09,
+        "sys_ram_mb": 24000.59,
+        "vram_alloc_mb": 5486.25,
+        "vram_reserved_mb": 5486.25
+      },
+      "final": {
+        "rss_ram_mb": 1307.74,
+        "sys_ram_mb": 24030.23,
+        "vram_alloc_mb": 5944.25,
+        "vram_reserved_mb": 458.0
+      },
+      "delta": {
+        "rss_ram_mb": 4.64,
+        "vram_alloc_mb": 458.0,
+        "vram_reserved_mb": -5028.25
+      },
+      "stats": {
+        "rss_ram_mb": {
+          "mean": 1354.79,
+          "std": 117.66,
+          "min": 1303.1,
+          "max": 1687.03,
+          "p50": 1306.98,
+          "p90": 1661.27,
+          "p99": 1685.41
+        },
+        "vram_alloc_mb": {
+          "mean": 5830.61,
+          "std": 137.79,
+          "min": 5486.25,
+          "max": 5944.25,
+          "p50": 5944.25,
+          "p90": 5944.25,
+          "p99": 5944.25
+        },
+        "vram_reserved_mb": {
+          "mean": 376.64,
+          "std": 415.66,
+          "min": 120.0,
+          "max": 5486.25,
+          "p50": 458.0,
+          "p90": 458.0,
+          "p99": 458.0
+        },
+        "gpu_compute_util_pct": {
+          "mean": 49.08,
+          "std": 29.05,
+          "min": 5.0,
+          "max": 81.0,
+          "p50": 52.5,
+          "p90": 81.0,
+          "p99": 81.0
+        },
+        "cpu_util_pct": {
+          "mean": 22.13,
+          "std": 8.15,
+          "min": 0.0,
+          "max": 59.3,
+          "p50": 20.7,
+          "p90": 32.35,
+          "p99": 51.88
+        }
+      },
+      "memory_leak_check": {
+        "delta_rss_mb": 4.64,
+        "threshold_mb": 50.0,
+        "status": "PASS [OK]"
+      },
+      "samples_count": 170
+    },
+    "batch_summary": null,
+    "benchmarks": {
+      "4K": {
+        "resolution": [
+          3840,
+          2160
+        ],
+        "tile_size": 640,
+        "tile_count": 32,
+        "tile_count_baseline_640": 60,
+        "tile_reduction_percent": 46.67,
+        "targets_detected": 6,
+        "stage_latencies_ms": {
+          "T_read": {
+            "mean": 12.99,
+            "std": 0.76,
+            "min": 11.96,
+            "max": 15.11,
+            "p50": 12.95,
+            "p90": 13.73,
+            "p99": 14.95
+          },
+          "T_tiling": {
+            "mean": 0.06,
+            "std": 0.01,
+            "min": 0.04,
+            "max": 0.08,
+            "p50": 0.05,
+            "p90": 0.06,
+            "p99": 0.08
+          },
+          "T_slice": {
+            "mean": 2.05,
+            "std": 0.22,
+            "min": 1.76,
+            "max": 2.53,
+            "p50": 2.03,
+            "p90": 2.31,
+            "p99": 2.49
+          },
+          "T_infer": {
+            "mean": 45.45,
+            "std": 0.8,
+            "min": 44.28,
+            "max": 46.76,
+            "p50": 45.5,
+            "p90": 46.5,
+            "p99": 46.73
+          },
+          "T_remap": {
+            "mean": 0.04,
+            "std": 0.0,
+            "min": 0.03,
+            "max": 0.05,
+            "p50": 0.04,
+            "p90": 0.04,
+            "p99": 0.05
+          },
+          "T_nms": {
+            "mean": 62.58,
+            "std": 3.14,
+            "min": 57.29,
+            "max": 68.13,
+            "p50": 63.21,
+            "p90": 66.72,
+            "p99": 68.07
+          },
+          "T_io_write": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p99": 0.0
+          },
+          "T_total": {
+            "mean": 124.27,
+            "std": 3.24,
+            "min": 119.56,
+            "max": 130.82,
+            "p50": 124.58,
+            "p90": 128.91,
+            "p99": 130.5
+          }
+        },
+        "fps": {
+          "mean": 8.05,
+          "p50": 8.03
+        },
+        "pcie_efficiency": {
+          "frame_raster_mb": 23.73,
+          "h2d_stream_mb": 23.73,
+          "d2h_zero_readback_kb": 0.188,
+          "d2h_traditional_readback_mb": 23.73,
+          "readback_reduction_percent": 99.9992,
+          "total_bus_reduction_percent": 50.0
+        }
+      },
+      "8K": {
+        "resolution": [
+          7680,
+          4320
+        ],
+        "tile_size": 736,
+        "tile_count": 104,
+        "tile_count_baseline_640": 240,
+        "tile_reduction_percent": 56.67,
+        "targets_detected": 42,
+        "stage_latencies_ms": {
+          "T_read": {
+            "mean": 46.67,
+            "std": 0.8,
+            "min": 45.38,
+            "max": 48.56,
+            "p50": 46.65,
+            "p90": 47.57,
+            "p99": 48.39
+          },
+          "T_tiling": {
+            "mean": 0.1,
+            "std": 0.01,
+            "min": 0.09,
+            "max": 0.11,
+            "p50": 0.1,
+            "p90": 0.11,
+            "p99": 0.11
+          },
+          "T_slice": {
+            "mean": 8.26,
+            "std": 0.46,
+            "min": 7.47,
+            "max": 9.65,
+            "p50": 8.19,
+            "p90": 8.65,
+            "p99": 9.46
+          },
+          "T_infer": {
+            "mean": 148.49,
+            "std": 1.92,
+            "min": 145.91,
+            "max": 153.05,
+            "p50": 148.11,
+            "p90": 151.38,
+            "p99": 152.85
+          },
+          "T_remap": {
+            "mean": 0.14,
+            "std": 0.01,
+            "min": 0.12,
+            "max": 0.16,
+            "p50": 0.14,
+            "p90": 0.15,
+            "p99": 0.16
+          },
+          "T_nms": {
+            "mean": 60.82,
+            "std": 2.51,
+            "min": 56.54,
+            "max": 68.44,
+            "p50": 60.49,
+            "p90": 62.82,
+            "p99": 67.79
+          },
+          "T_io_write": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p99": 0.0
+          },
+          "T_total": {
+            "mean": 265.28,
+            "std": 3.58,
+            "min": 258.41,
+            "max": 273.18,
+            "p50": 264.3,
+            "p90": 269.91,
+            "p99": 272.97
+          }
+        },
+        "fps": {
+          "mean": 3.77,
+          "p50": 3.78
+        },
+        "pcie_efficiency": {
+          "frame_raster_mb": 94.92,
+          "h2d_stream_mb": 94.92,
+          "d2h_zero_readback_kb": 1.312,
+          "d2h_traditional_readback_mb": 94.92,
+          "readback_reduction_percent": 99.9986,
+          "total_bus_reduction_percent": 50.0
+        }
+      },
+      "13K": {
+        "resolution": [
+          13000,
+          6500
+        ],
+        "tile_size": 736,
+        "tile_count": 242,
+        "tile_count_baseline_640": 578,
+        "tile_reduction_percent": 58.13,
+        "targets_detected": 105,
+        "stage_latencies_ms": {
+          "T_read": {
+            "mean": 114.92,
+            "std": 1.35,
+            "min": 112.98,
+            "max": 118.82,
+            "p50": 114.93,
+            "p90": 115.96,
+            "p99": 118.44
+          },
+          "T_tiling": {
+            "mean": 0.16,
+            "std": 0.02,
+            "min": 0.15,
+            "max": 0.22,
+            "p50": 0.16,
+            "p90": 0.18,
+            "p99": 0.21
+          },
+          "T_slice": {
+            "mean": 21.27,
+            "std": 1.02,
+            "min": 19.79,
+            "max": 24.38,
+            "p50": 21.13,
+            "p90": 22.07,
+            "p99": 24.12
+          },
+          "T_infer": {
+            "mean": 345.34,
+            "std": 2.79,
+            "min": 342.21,
+            "max": 351.97,
+            "p50": 344.15,
+            "p90": 349.22,
+            "p99": 351.79
+          },
+          "T_remap": {
+            "mean": 0.28,
+            "std": 0.01,
+            "min": 0.24,
+            "max": 0.31,
+            "p50": 0.28,
+            "p90": 0.29,
+            "p99": 0.31
+          },
+          "T_nms": {
+            "mean": 61.88,
+            "std": 2.47,
+            "min": 58.52,
+            "max": 70.03,
+            "p50": 61.29,
+            "p90": 64.62,
+            "p99": 69.27
+          },
+          "T_io_write": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "p99": 0.0
+          },
+          "T_total": {
+            "mean": 544.96,
+            "std": 3.64,
+            "min": 540.32,
+            "max": 554.97,
+            "p50": 544.49,
+            "p90": 549.6,
+            "p99": 554.04
+          }
+        },
+        "fps": {
+          "mean": 1.83,
+          "p50": 1.84
+        },
+        "pcie_efficiency": {
+          "frame_raster_mb": 241.76,
+          "h2d_stream_mb": 241.76,
+          "d2h_zero_readback_kb": 3.281,
+          "d2h_traditional_readback_mb": 241.76,
+          "readback_reduction_percent": 99.9987,
+          "total_bus_reduction_percent": 50.0
+        }
+      }
+    },
+    "accuracy_metrics": null,
+    "per_frame_records": [],
+    "memory_leak_audit": {
+      "delta_rss_mb": 4.64,
+      "threshold_mb": 50.0,
+      "status": "PASS [OK]"
+    }
+  },
+  "comparison": {
+    "mean_batch_size": {
+      "standard": 1.0,
+      "turbo": 8.0,
+      "ratio": 8.0
+    },
+    "throughput_fps": {
+      "standard": 3.62,
+      "turbo": 4.55,
+      "delta_pct": 25.6
+    },
+    "median_latency_p50_ms": {
+      "standard": 415.48,
+      "turbo": 311.12,
+      "delta_pct": -25.1
+    },
+    "mean_infer_ms": {
+      "standard": 286.11,
+      "turbo": 179.76,
+      "delta_pct": -37.2
+    },
+    "peak_vram_mb": {
+      "standard": 5877.8,
+      "turbo": 5944.2,
+      "delta_mb": 66.4
+    },
+    "leak_status": {
+      "standard": "PASS [OK]",
+      "turbo": "PASS [OK]"
+    }
+  },
+  "system_resource_telemetry": {
+    "baseline": {
+      "rss_ram_mb": 1303.09,
+      "sys_ram_mb": 24000.59,
+      "vram_alloc_mb": 5486.25,
+      "vram_reserved_mb": 5486.25
+    },
+    "final": {
+      "rss_ram_mb": 1307.74,
+      "sys_ram_mb": 24030.23,
+      "vram_alloc_mb": 5944.25,
+      "vram_reserved_mb": 458.0
+    },
+    "delta": {
+      "rss_ram_mb": 4.64,
+      "vram_alloc_mb": 458.0,
+      "vram_reserved_mb": -5028.25
+    },
+    "stats": {
+      "rss_ram_mb": {
+        "mean": 1354.79,
+        "std": 117.66,
+        "min": 1303.1,
+        "max": 1687.03,
+        "p50": 1306.98,
+        "p90": 1661.27,
+        "p99": 1685.41
+      },
+      "vram_alloc_mb": {
+        "mean": 5830.61,
+        "std": 137.79,
+        "min": 5486.25,
+        "max": 5944.25,
+        "p50": 5944.25,
+        "p90": 5944.25,
+        "p99": 5944.25
+      },
+      "vram_reserved_mb": {
+        "mean": 376.64,
+        "std": 415.66,
+        "min": 120.0,
+        "max": 5486.25,
+        "p50": 458.0,
+        "p90": 458.0,
+        "p99": 458.0
+      },
+      "gpu_compute_util_pct": {
+        "mean": 49.08,
+        "std": 29.05,
+        "min": 5.0,
+        "max": 81.0,
+        "p50": 52.5,
+        "p90": 81.0,
+        "p99": 81.0
+      },
+      "cpu_util_pct": {
+        "mean": 22.13,
+        "std": 8.15,
+        "min": 0.0,
+        "max": 59.3,
+        "p50": 20.7,
+        "p90": 32.35,
+        "p99": 51.88
+      }
+    },
+    "memory_leak_check": {
+      "delta_rss_mb": 4.64,
+      "threshold_mb": 50.0,
+      "status": "PASS [OK]"
+    },
+    "samples_count": 170
+  },
+  "batch_summary": null,
+  "accuracy_metrics": null,
+  "benchmarks": {
+    "4K": {
+      "resolution": [
+        3840,
+        2160
+      ],
+      "tile_size": 640,
+      "tile_count": 32,
+      "tile_count_baseline_640": 60,
+      "tile_reduction_percent": 46.67,
+      "targets_detected": 6,
+      "stage_latencies_ms": {
+        "T_read": {
+          "mean": 12.99,
+          "std": 0.76,
+          "min": 11.96,
+          "max": 15.11,
+          "p50": 12.95,
+          "p90": 13.73,
+          "p99": 14.95
+        },
+        "T_tiling": {
+          "mean": 0.06,
+          "std": 0.01,
+          "min": 0.04,
+          "max": 0.08,
+          "p50": 0.05,
+          "p90": 0.06,
+          "p99": 0.08
+        },
+        "T_slice": {
+          "mean": 2.05,
+          "std": 0.22,
+          "min": 1.76,
+          "max": 2.53,
+          "p50": 2.03,
+          "p90": 2.31,
+          "p99": 2.49
+        },
+        "T_infer": {
+          "mean": 45.45,
+          "std": 0.8,
+          "min": 44.28,
+          "max": 46.76,
+          "p50": 45.5,
+          "p90": 46.5,
+          "p99": 46.73
+        },
+        "T_remap": {
+          "mean": 0.04,
+          "std": 0.0,
+          "min": 0.03,
+          "max": 0.05,
+          "p50": 0.04,
+          "p90": 0.04,
+          "p99": 0.05
+        },
+        "T_nms": {
+          "mean": 62.58,
+          "std": 3.14,
+          "min": 57.29,
+          "max": 68.13,
+          "p50": 63.21,
+          "p90": 66.72,
+          "p99": 68.07
+        },
+        "T_io_write": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p50": 0.0,
+          "p90": 0.0,
+          "p99": 0.0
+        },
+        "T_total": {
+          "mean": 124.27,
+          "std": 3.24,
+          "min": 119.56,
+          "max": 130.82,
+          "p50": 124.58,
+          "p90": 128.91,
+          "p99": 130.5
+        }
+      },
+      "fps": {
+        "mean": 8.05,
+        "p50": 8.03
+      },
+      "pcie_efficiency": {
+        "frame_raster_mb": 23.73,
+        "h2d_stream_mb": 23.73,
+        "d2h_zero_readback_kb": 0.188,
+        "d2h_traditional_readback_mb": 23.73,
+        "readback_reduction_percent": 99.9992,
+        "total_bus_reduction_percent": 50.0
+      }
+    },
+    "8K": {
+      "resolution": [
+        7680,
+        4320
+      ],
+      "tile_size": 736,
+      "tile_count": 104,
+      "tile_count_baseline_640": 240,
+      "tile_reduction_percent": 56.67,
+      "targets_detected": 42,
+      "stage_latencies_ms": {
+        "T_read": {
+          "mean": 46.67,
+          "std": 0.8,
+          "min": 45.38,
+          "max": 48.56,
+          "p50": 46.65,
+          "p90": 47.57,
+          "p99": 48.39
+        },
+        "T_tiling": {
+          "mean": 0.1,
+          "std": 0.01,
+          "min": 0.09,
+          "max": 0.11,
+          "p50": 0.1,
+          "p90": 0.11,
+          "p99": 0.11
+        },
+        "T_slice": {
+          "mean": 8.26,
+          "std": 0.46,
+          "min": 7.47,
+          "max": 9.65,
+          "p50": 8.19,
+          "p90": 8.65,
+          "p99": 9.46
+        },
+        "T_infer": {
+          "mean": 148.49,
+          "std": 1.92,
+          "min": 145.91,
+          "max": 153.05,
+          "p50": 148.11,
+          "p90": 151.38,
+          "p99": 152.85
+        },
+        "T_remap": {
+          "mean": 0.14,
+          "std": 0.01,
+          "min": 0.12,
+          "max": 0.16,
+          "p50": 0.14,
+          "p90": 0.15,
+          "p99": 0.16
+        },
+        "T_nms": {
+          "mean": 60.82,
+          "std": 2.51,
+          "min": 56.54,
+          "max": 68.44,
+          "p50": 60.49,
+          "p90": 62.82,
+          "p99": 67.79
+        },
+        "T_io_write": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p50": 0.0,
+          "p90": 0.0,
+          "p99": 0.0
+        },
+        "T_total": {
+          "mean": 265.28,
+          "std": 3.58,
+          "min": 258.41,
+          "max": 273.18,
+          "p50": 264.3,
+          "p90": 269.91,
+          "p99": 272.97
+        }
+      },
+      "fps": {
+        "mean": 3.77,
+        "p50": 3.78
+      },
+      "pcie_efficiency": {
+        "frame_raster_mb": 94.92,
+        "h2d_stream_mb": 94.92,
+        "d2h_zero_readback_kb": 1.312,
+        "d2h_traditional_readback_mb": 94.92,
+        "readback_reduction_percent": 99.9986,
+        "total_bus_reduction_percent": 50.0
+      }
+    },
+    "13K": {
+      "resolution": [
+        13000,
+        6500
+      ],
+      "tile_size": 736,
+      "tile_count": 242,
+      "tile_count_baseline_640": 578,
+      "tile_reduction_percent": 58.13,
+      "targets_detected": 105,
+      "stage_latencies_ms": {
+        "T_read": {
+          "mean": 114.92,
+          "std": 1.35,
+          "min": 112.98,
+          "max": 118.82,
+          "p50": 114.93,
+          "p90": 115.96,
+          "p99": 118.44
+        },
+        "T_tiling": {
+          "mean": 0.16,
+          "std": 0.02,
+          "min": 0.15,
+          "max": 0.22,
+          "p50": 0.16,
+          "p90": 0.18,
+          "p99": 0.21
+        },
+        "T_slice": {
+          "mean": 21.27,
+          "std": 1.02,
+          "min": 19.79,
+          "max": 24.38,
+          "p50": 21.13,
+          "p90": 22.07,
+          "p99": 24.12
+        },
+        "T_infer": {
+          "mean": 345.34,
+          "std": 2.79,
+          "min": 342.21,
+          "max": 351.97,
+          "p50": 344.15,
+          "p90": 349.22,
+          "p99": 351.79
+        },
+        "T_remap": {
+          "mean": 0.28,
+          "std": 0.01,
+          "min": 0.24,
+          "max": 0.31,
+          "p50": 0.28,
+          "p90": 0.29,
+          "p99": 0.31
+        },
+        "T_nms": {
+          "mean": 61.88,
+          "std": 2.47,
+          "min": 58.52,
+          "max": 70.03,
+          "p50": 61.29,
+          "p90": 64.62,
+          "p99": 69.27
+        },
+        "T_io_write": {
+          "mean": 0.0,
+          "std": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p50": 0.0,
+          "p90": 0.0,
+          "p99": 0.0
+        },
+        "T_total": {
+          "mean": 544.96,
+          "std": 3.64,
+          "min": 540.32,
+          "max": 554.97,
+          "p50": 544.49,
+          "p90": 549.6,
+          "p99": 554.04
+        }
+      },
+      "fps": {
+        "mean": 1.83,
+        "p50": 1.84
+      },
+      "pcie_efficiency": {
+        "frame_raster_mb": 241.76,
+        "h2d_stream_mb": 241.76,
+        "d2h_zero_readback_kb": 3.281,
+        "d2h_traditional_readback_mb": 241.76,
+        "readback_reduction_percent": 99.9987,
+        "total_bus_reduction_percent": 50.0
+      }
+    }
+  },
+  "memory_leak_audit": {
+    "delta_rss_mb": 4.64,
+    "threshold_mb": 50.0,
+    "status": "PASS [OK]"
+  }
+}

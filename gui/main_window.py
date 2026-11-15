@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -45,6 +46,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -52,6 +54,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
@@ -79,242 +82,6 @@ from gui.styles import DARK_TACTICAL_STYLE
 from src.detector_dispatcher import UnifiedDetector
 
 logger = logging.getLogger(__name__)
-
-# Old inline QSS preserved as reference comment
-"""
-QMainWindow {
-    background-color: #0b0f19;
-    color: #e2e8f0;
-}
-
-QWidget {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    font-size: 13px;
-    color: #cbd5e1;
-}
-
-/* Sidebar and containers */
-#sidebar {
-    background-color: #0f172a;
-    border-right: 1px solid #1e293b;
-}
-
-QGroupBox {
-    background-color: #131d31;
-    border: 1px solid #24344d;
-    border-radius: 6px;
-    margin-top: 1.2em;
-    padding: 10px;
-    font-weight: bold;
-    color: #38bdf8;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 10px;
-    padding: 0 4px;
-}
-
-/* Buttons */
-QPushButton {
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 5px;
-    color: #f8fafc;
-    padding: 7px 14px;
-    font-weight: 500;
-}
-
-QPushButton:hover {
-    background-color: #334155;
-    border-color: #475569;
-}
-
-QPushButton:pressed {
-    background-color: #0ea5e9;
-    border-color: #0284c7;
-    color: #ffffff;
-}
-
-QPushButton#btn_detect {
-    background-color: #0284c7;
-    border: 1px solid #38bdf8;
-    color: #ffffff;
-    font-weight: bold;
-    font-size: 14px;
-    padding: 9px;
-}
-
-QPushButton#btn_detect:hover {
-    background-color: #0ea5e9;
-    border-color: #7dd3fc;
-}
-
-QPushButton#btn_detect:disabled {
-    background-color: #1e293b;
-    border-color: #334155;
-    color: #64748b;
-}
-
-/* SpinBox, ComboBox */
-QSpinBox, QComboBox {
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 4px;
-    padding: 5px 8px;
-    color: #f8fafc;
-}
-
-QSpinBox:focus, QComboBox:focus {
-    border-color: #38bdf8;
-}
-
-QComboBox::drop-down {
-    subcontrol-origin: padding;
-    subcontrol-position: top right;
-    width: 20px;
-    border-left: 1px solid #334155;
-}
-
-QComboBox QAbstractItemView {
-    background-color: #1e293b;
-    border: 1px solid #475569;
-    selection-background-color: #0284c7;
-    selection-color: #ffffff;
-    color: #f8fafc;
-}
-
-/* Checkboxes */
-QCheckBox {
-    color: #e2e8f0;
-    spacing: 6px;
-}
-
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    border: 1px solid #475569;
-    background-color: #1e293b;
-}
-
-QCheckBox::indicator:checked {
-    background-color: #0284c7;
-    border-color: #38bdf8;
-}
-
-/* Sliders */
-QSlider::groove:horizontal {
-    border: 1px solid #334155;
-    height: 6px;
-    background: #1e293b;
-    border-radius: 3px;
-}
-
-QSlider::sub-page:horizontal {
-    background: #0284c7;
-    border-radius: 3px;
-}
-
-QSlider::handle:horizontal {
-    background: #38bdf8;
-    border: 1px solid #0284c7;
-    width: 14px;
-    margin-top: -5px;
-    margin-bottom: -5px;
-    border-radius: 7px;
-}
-
-/* Target List Table & File List */
-QTableWidget, QListWidget {
-    background-color: #0f172a;
-    border: 1px solid #24344d;
-    border-radius: 4px;
-    gridline-color: #1e293b;
-    color: #f1f5f9;
-    selection-background-color: #1e3a5f;
-    selection-color: #38bdf8;
-}
-
-QListWidget::item {
-    padding: 3px 6px;
-    border-bottom: 1px solid #162032;
-}
-
-QListWidget::item:hover {
-    background-color: #1e293b;
-}
-
-QListWidget::item:selected {
-    background-color: #0284c7;
-    color: #ffffff;
-}
-
-QHeaderView::section {
-    background-color: #131d31;
-    color: #94a3b8;
-    padding: 5px;
-    border: none;
-    border-right: 1px solid #1e293b;
-    border-bottom: 1px solid #1e293b;
-    font-weight: 600;
-}
-
-/* Progress bar */
-QProgressBar {
-    background-color: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 4px;
-    text-align: center;
-    color: #ffffff;
-    font-weight: bold;
-    height: 14px;
-}
-
-QProgressBar::chunk {
-    background-color: #0284c7;
-    border-radius: 3px;
-}
-
-/* Splitter */
-QSplitter::handle {
-    background-color: #1e293b;
-    width: 3px;
-    height: 3px;
-}
-
-QSplitter::handle:hover {
-    background-color: #0284c7;
-}
-
-/* Scroll Area & Bars */
-QScrollArea {
-    background-color: transparent;
-    border: none;
-}
-
-QScrollBar:vertical {
-    border: none;
-    background: #0f172a;
-    width: 6px;
-    margin: 0px;
-}
-
-QScrollBar::handle:vertical {
-    background: #334155;
-    min-height: 20px;
-    border-radius: 3px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background: #38bdf8;
-}
-
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-"""
 
 
 class DetectionSimulatorWorker(QThread):
@@ -491,45 +258,50 @@ class MainWindow(QMainWindow):
         """Create tactical top menu bar and quick access toolbar."""
         menu_bar = self.menuBar()
 
-        # 1. File Menu
-        menu_file = menu_bar.addMenu("📁 Файл")
+        style = self.style()
 
-        act_open_file = QAction("Відкрити знімок...", self)
+        # 1. File Menu
+        menu_file = menu_bar.addMenu("Файл")
+
+        act_open_file = QAction(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), "Відкрити знімок...", self)
         act_open_file.setShortcut(QKeySequence("Ctrl+O"))
         act_open_file.triggered.connect(self._on_open_image_dialog)
         menu_file.addAction(act_open_file)
 
-        act_open_folder = QAction("Обрати робочу папку...", self)
+        act_open_folder = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DirIcon), "Обрати робочу папку...", self)
         act_open_folder.setShortcut(QKeySequence("Ctrl+Shift+O"))
         act_open_folder.triggered.connect(self._on_open_folder_dialog)
         menu_file.addAction(act_open_folder)
 
-        act_mock = QAction("Згенерувати 8K тест...", self)
-        act_mock.setShortcut(QKeySequence("Ctrl+T"))
-        act_mock.triggered.connect(self.load_mock_8k_image)
-        menu_file.addAction(act_mock)
-
-        act_batch = QAction("⚡ Пакетний аналіз папки...", self)
+        act_batch = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView),
+            "Пакетний аналіз папки...",
+            self,
+        )
         act_batch.setShortcut(QKeySequence("Ctrl+B"))
         act_batch.triggered.connect(self._on_batch_triage_dialog)
         menu_file.addAction(act_batch)
 
         menu_file.addSeparator()
 
-        act_exit = QAction("Вихід", self)
+        act_exit = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton), "Вихід", self)
         act_exit.setShortcut(QKeySequence("Ctrl+Q"))
         act_exit.triggered.connect(self.close)
         menu_file.addAction(act_exit)
 
         # 2. View Menu
-        menu_view = menu_bar.addMenu("👁️ Вигляд")
+        menu_view = menu_bar.addMenu("Вигляд")
 
-        act_fit = QAction("Вписати зображення", self)
+        act_fit = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_ToolBarHorizontalExtensionButton),
+            "Вписати зображення",
+            self,
+        )
         act_fit.setShortcut(QKeySequence("Ctrl+0"))
         act_fit.triggered.connect(self.canvas.fit_to_view)
         menu_view.addAction(act_fit)
 
-        act_100 = QAction("Масштаб 100%", self)
+        act_100 = QAction(style.standardIcon(QStyle.StandardPixmap.SP_DesktopIcon), "Масштаб 100%", self)
         act_100.setShortcut(QKeySequence("Ctrl+1"))
         act_100.triggered.connect(self.canvas.reset_zoom)
         menu_view.addAction(act_100)
@@ -539,8 +311,12 @@ class MainWindow(QMainWindow):
         menu_view.addAction(self.canvas.action_scale_text_with_zoom)
 
         # 3. Settings Menu
-        menu_settings = menu_bar.addMenu("⚙️ Налаштування")
-        act_settings = QAction("Параметри застосунку...", self)
+        menu_settings = menu_bar.addMenu("Налаштування")
+        act_settings = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_FileDialogListView),
+            "Параметри застосунку...",
+            self,
+        )
         act_settings.setShortcut(QKeySequence("Ctrl+,"))
         act_settings.triggered.connect(self._open_settings_dialog)
         menu_settings.addAction(act_settings)
@@ -566,6 +342,24 @@ class MainWindow(QMainWindow):
             self.spin_altitude.setValue(int(cfg.default_altitude))
             self.slider_conf.setValue(int(cfg.default_confidence * 100))
             self.status_bar.showMessage("Налаштування застосунку успішно оновлено", 3000)
+
+    def _on_performance_mode_changed(self) -> None:
+        """Handle toggle of standard vs turbo performance mode."""
+        is_turbo = hasattr(self, "rb_mode_turbo") and self.rb_mode_turbo.isChecked()
+        mode_str = "turbo" if is_turbo else "standard"
+        try:
+            self.cfg.performance_mode = mode_str
+            self.cfg.save()
+        except Exception as err:
+            logger.warning("Failed to save performance mode: %s", err)
+
+        if is_turbo:
+            from src.detector_dispatcher import calculate_safe_batch_size
+
+            b_est = calculate_safe_batch_size(target_tile_size=640, is_turbo=True)
+            self.status_bar.showMessage(f"Режим швидкодії: Turbo [B={b_est}]", 3000)
+        else:
+            self.status_bar.showMessage("Режим швидкодії: Стандартний [B=1]", 3000)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Save layout geometry and splitter sizes upon window closure."""
@@ -599,32 +393,34 @@ class MainWindow(QMainWindow):
         layout_input.setSpacing(6)
 
         btn_layout = QHBoxLayout()
-        self.btn_open = QPushButton("📁 Фото", grp_input)
+        style = self.style()
+
+        self.btn_open = QPushButton("Фото", grp_input)
+        self.btn_open.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+        self.btn_open.setIconSize(QSize(16, 16))
         self.btn_open.setToolTip("Відкрити аерофотознімок з диска (Ctrl+O)")
         self.btn_open.clicked.connect(self._on_open_image_dialog)
 
-        self.btn_open_folder = QPushButton("📂 Папка", grp_input)
+        self.btn_open_folder = QPushButton("Папка", grp_input)
+        self.btn_open_folder.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        self.btn_open_folder.setIconSize(QSize(16, 16))
         self.btn_open_folder.setToolTip("Обрати папку з аерофотознімками для пакетного перегляду")
         self.btn_open_folder.clicked.connect(self._on_open_folder_dialog)
 
-        self.btn_load_mock_8k = QPushButton("⚡ 8K Тест", grp_input)
-        self.btn_load_mock_8k.setToolTip("Згенерувати тестовий кадр 8K (7680×4320)")
-        self.btn_load_mock_8k.clicked.connect(self.load_mock_8k_image)
-
         btn_layout.addWidget(self.btn_open)
         btn_layout.addWidget(self.btn_open_folder)
-        btn_layout.addWidget(self.btn_load_mock_8k)
         layout_input.addLayout(btn_layout)
 
-        self.btn_batch_triage = QPushButton("⚡ Пакетний аналіз папки", grp_input)
+        self.btn_batch_triage = QPushButton("Пакетний аналіз папки", grp_input)
         self.btn_batch_triage.setObjectName("btn_batch_triage")
+        self.btn_batch_triage.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.btn_batch_triage.setIconSize(QSize(16, 16))
         self.btn_batch_triage.setToolTip("Пакетна фільтрація папки зі збереженням детекцій у JSON (Batch Triage)")
         self.btn_batch_triage.clicked.connect(self._on_batch_triage_dialog)
         layout_input.addWidget(self.btn_batch_triage)
 
         # Convenient aliases for buttons
         self.btn_open_file = self.btn_open
-        self.btn_test_8k = self.btn_load_mock_8k
 
         # File List for Batch/Folder Navigation
         lbl_list = QLabel("Знімки у робочій папці:", grp_input)
@@ -682,10 +478,42 @@ class MainWindow(QMainWindow):
         layout_params.addWidget(lbl_vram, 1, 0)
         layout_params.addWidget(self.combo_vram, 1, 1)
 
+        # Performance Mode selection (Default B=1 Safe Edge vs Turbo Dynamic Max Batch)
+        lbl_mode = QLabel("Режим інференсу:", grp_params)
+        mode_box = QWidget(grp_params)
+        layout_mode = QVBoxLayout(mode_box)
+        layout_mode.setContentsMargins(0, 0, 0, 0)
+        layout_mode.setSpacing(4)
+
+        self.rb_mode_eco = QRadioButton("Стандартний (B = 1, Safe Edge)", mode_box)
+        self.rb_mode_eco.setToolTip("Послідовна обробка плиток з B=1. Максимальна безпека VRAM для Edge.")
+        self.rb_mode_turbo = QRadioButton("⚡ Max Performance", mode_box)
+        self.rb_mode_turbo.setToolTip("Динамічний розрахунок максимального безпечного пакета (Turbo B_max).")
+
+        self.btn_group_mode = QButtonGroup(self)
+        self.btn_group_mode.addButton(self.rb_mode_eco, 1)
+        self.btn_group_mode.addButton(self.rb_mode_turbo, 2)
+
+        if getattr(self.cfg, "performance_mode", "standard") == "turbo":
+            self.rb_mode_turbo.setChecked(True)
+        else:
+            self.rb_mode_eco.setChecked(True)
+
+        self.rb_mode_eco.toggled.connect(self._on_performance_mode_changed)
+        self.rb_mode_turbo.toggled.connect(self._on_performance_mode_changed)
+
+        layout_mode.addWidget(self.rb_mode_eco)
+        layout_mode.addWidget(self.rb_mode_turbo)
+
+        layout_params.addWidget(lbl_mode, 2, 0)
+        layout_params.addWidget(mode_box, 2, 1)
+
         # Start and Cancel Detection Buttons
         detect_layout = QHBoxLayout()
-        self.btn_toggle_analysis = QPushButton("▶ Почати аналіз", grp_params)
+        self.btn_toggle_analysis = QPushButton("Почати аналіз", grp_params)
         self.btn_toggle_analysis.setObjectName("btn_toggle_analysis")
+        self.btn_toggle_analysis.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_toggle_analysis.setIconSize(QSize(16, 16))
         self.btn_toggle_analysis.setEnabled(False)
         self.btn_toggle_analysis.setToolTip("Запустити або зупинити автоматичний аналіз знімків")
         self.btn_toggle_analysis.clicked.connect(self.toggle_analysis)
@@ -693,15 +521,17 @@ class MainWindow(QMainWindow):
         # Alias for backwards compatibility
         self.btn_detect = self.btn_toggle_analysis
 
-        self.btn_cancel = QPushButton("⏹ Зупинити", grp_params)
+        self.btn_cancel = QPushButton("Зупинити", grp_params)
         self.btn_cancel.setObjectName("btn_cancel")
+        self.btn_cancel.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+        self.btn_cancel.setIconSize(QSize(16, 16))
         self.btn_cancel.setVisible(False)
         self.btn_cancel.setToolTip("Зупинити процес детекції або пакетного аналізу")
         self.btn_cancel.clicked.connect(self.cancel_detection)
 
         detect_layout.addWidget(self.btn_toggle_analysis, stretch=3)
         detect_layout.addWidget(self.btn_cancel, stretch=1)
-        layout_params.addLayout(detect_layout, 2, 0, 1, 2)
+        layout_params.addLayout(detect_layout, 3, 0, 1, 2)
 
         main_layout.addWidget(grp_params)
         main_layout.addStretch()
@@ -780,47 +610,15 @@ class MainWindow(QMainWindow):
         scroll_layout.setContentsMargins(4, 4, 4, 4)
         scroll_layout.setSpacing(4)
 
-        for class_id, class_name in DEFAULT_CLASS_NAMES.items():
-            color = get_class_color(class_id)
-            chk = QCheckBox(f"[{class_id:02d}] {class_name}", scroll_content)
-            chk.setChecked(True)
-            chk.setStyleSheet(
-                f"QCheckBox {{ "
-                f"    color: #e2e8f0; "
-                f"    font-weight: 500; "
-                f"    font-size: 12px; "
-                f"    spacing: 8px; "
-                f"    padding: 3px 6px; "
-                f"    border-radius: 3px; "
-                f"    background-color: transparent; "
-                f"}} "
-                f"QCheckBox:hover {{ "
-                f"    background-color: #0f1d3a; "
-                f"    color: #ffffff; "
-                f"}} "
-                f"QCheckBox::indicator {{ "
-                f"    width: 14px; "
-                f"    height: 14px; "
-                f"    border: 2px solid {color.name()}; "
-                f"    border-radius: 3px; "
-                f"    background-color: #080f1e; "
-                f"}} "
-                f"QCheckBox::indicator:hover {{ "
-                f"    border-color: #38bdf8; "
-                f"}} "
-                f"QCheckBox::indicator:checked {{ "
-                f"    background-color: {color.name()}; "
-                f"    border-color: {color.name()}; "
-                f"}}"
-            )
-            chk.toggled.connect(
-                lambda checked, cid=class_id: self.canvas.set_class_visibility(cid, checked)
-            )
-            self._class_checkboxes[class_id] = chk
-            scroll_layout.addWidget(chk)
+        self.scroll_classes = scroll_classes
+        self.scroll_classes_content = scroll_content
+        self.scroll_classes_layout = scroll_layout
 
         scroll_classes.setWidget(scroll_content)
         layout_filter.addWidget(scroll_classes)
+
+        # Initialize class checkboxes dynamically with fallback
+        self.update_class_names(dict(DEFAULT_CLASS_NAMES))
 
         main_layout.addWidget(grp_filter)
 
@@ -852,6 +650,71 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(grp_targets, stretch=1)
 
         return panel
+
+    def update_class_names(self, class_names: Optional[Dict[int, str]] = None) -> None:
+        """Dynamically update class names in CanvasViewer and regenerate filter checkboxes in UI."""
+        if not class_names:
+            try:
+                if self._shared_detector is not None:
+                    class_names = self._shared_detector.get_class_names()
+            except Exception as exc:
+                logger.warning("Failed to obtain class names from detector: %s", exc)
+
+        if not class_names:
+            class_names = dict(DEFAULT_CLASS_NAMES)
+
+        # 1. Update CanvasViewer
+        self.canvas.set_class_names(class_names)
+
+        # 2. Clear existing checkboxes from layout
+        if hasattr(self, "scroll_classes_layout"):
+            while self.scroll_classes_layout.count() > 0:
+                item = self.scroll_classes_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+            self._class_checkboxes.clear()
+
+            # 3. Create new checkboxes for each class
+            for class_id, class_name in sorted(class_names.items()):
+                color = get_class_color(class_id)
+                chk = QCheckBox(f"[{class_id:02d}] {class_name}", self.scroll_classes_content)
+                chk.setChecked(True)
+                chk.setStyleSheet(
+                    f"QCheckBox {{ "
+                    f"    color: #e2e8f0; "
+                    f"    font-weight: 500; "
+                    f"    font-size: 12px; "
+                    f"    spacing: 8px; "
+                    f"    padding: 3px 6px; "
+                    f"    border-radius: 3px; "
+                    f"    background-color: transparent; "
+                    f"}} "
+                    f"QCheckBox:hover {{ "
+                    f"    background-color: #0f1d3a; "
+                    f"    color: #ffffff; "
+                    f"}} "
+                    f"QCheckBox::indicator {{ "
+                    f"    width: 14px; "
+                    f"    height: 14px; "
+                    f"    border: 2px solid {color.name()}; "
+                    f"    border-radius: 3px; "
+                    f"    background-color: #080f1e; "
+                    f"}} "
+                    f"QCheckBox::indicator:hover {{ "
+                    f"    border-color: #38bdf8; "
+                    f"}} "
+                    f"QCheckBox::indicator:checked {{ "
+                    f"    background-color: {color.name()}; "
+                    f"    border-color: {color.name()}; "
+                    f"}}"
+                )
+                chk.toggled.connect(
+                    lambda checked, cid=class_id: self.canvas.set_class_visibility(cid, checked)
+                )
+                self._class_checkboxes[class_id] = chk
+                self.scroll_classes_layout.addWidget(chk)
 
     def _select_all_classes(self) -> None:
         """Enable all class checkboxes."""
@@ -889,13 +752,22 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.lbl_status_zoom)
 
         # Quick zoom buttons
+        btn_style = """
+            QPushButton {
+                padding: 0px 4px;
+                margin: 0px;
+                font-size: 11px;
+            }
+        """
         btn_fit = QPushButton("Вписати", self)
         btn_fit.setFixedHeight(22)
+        btn_fit.setStyleSheet(btn_style)
         btn_fit.clicked.connect(self.canvas.fit_to_view)
         self.status_bar.addPermanentWidget(btn_fit)
 
         btn_100 = QPushButton("100%", self)
         btn_100.setFixedHeight(22)
+        btn_100.setStyleSheet(btn_style)
         btn_100.clicked.connect(self.canvas.reset_zoom)
         self.status_bar.addPermanentWidget(btn_100)
 
@@ -926,34 +798,40 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------------------
     def _on_open_image_dialog(self) -> None:
         """Open file picker to select an aerial image file."""
-        file_path, _ = QFileDialog.getOpenFileName(
+        dialog = QFileDialog(
             self,
             "Вибрати аерофотознімок",
             "",
             "Зображення (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;Всі файли (*.*)",
         )
-        if file_path:
-            self.load_image_file(file_path)
-            # Sync with file list
-            p = Path(file_path)
-            self.list_files.blockSignals(True)
-            self.list_files.clear()
-            item = QListWidgetItem(p.name)
-            item.setData(Qt.ItemDataRole.UserRole, str(p))
-            self.list_files.addItem(item)
-            self.list_files.setCurrentRow(0)
-            self.list_files.blockSignals(False)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(DARK_TACTICAL_STYLE)
+        if dialog.exec():
+            selected = dialog.selectedFiles()
+            if selected:
+                file_path = selected[0]
+                self.load_image_file(file_path)
+                # Sync with file list
+                p = Path(file_path)
+                self.list_files.blockSignals(True)
+                self.list_files.clear()
+                item = QListWidgetItem(p.name)
+                item.setData(Qt.ItemDataRole.UserRole, str(p))
+                self.list_files.addItem(item)
+                self.list_files.setCurrentRow(0)
+                self.list_files.blockSignals(False)
 
     def _on_open_folder_dialog(self) -> None:
         """Open directory picker to select a folder containing aerial images."""
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "Обрати папку з аерофотознімками",
-            "",
-            QFileDialog.Option.ShowDirsOnly,
-        )
-        if folder_path:
-            self.load_image_folder(folder_path)
+        dialog = QFileDialog(self, "Обрати папку з аерофотознімками", "")
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setStyleSheet(DARK_TACTICAL_STYLE)
+        if dialog.exec():
+            selected = dialog.selectedFiles()
+            if selected:
+                self.load_image_folder(selected[0])
 
     def load_image_folder(self, folder_path: str) -> None:
         """Scan folder for aerial images and populate the file list."""
@@ -1089,7 +967,8 @@ class MainWindow(QMainWindow):
         """Set stream analysis active state and update button appearance."""
         self.is_analysis_active = bool(active)
         if self.is_analysis_active:
-            self.btn_toggle_analysis.setText("⏹ Зупинити аналіз")
+            self.btn_toggle_analysis.setText("Зупинити аналіз")
+            self.btn_toggle_analysis.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
             self.btn_toggle_analysis.setStyleSheet(
                 "background-color: #ef4444; border: 1px solid #f87171; color: #ffffff; "
                 "font-weight: bold; font-size: 14px; padding: 9px;"
@@ -1098,7 +977,8 @@ class MainWindow(QMainWindow):
             if self.canvas.has_image():
                 self.start_detection()
         else:
-            self.btn_toggle_analysis.setText("▶ Почати аналіз")
+            self.btn_toggle_analysis.setText("Почати аналіз")
+            self.btn_toggle_analysis.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
             self.btn_toggle_analysis.setStyleSheet(
                 "background-color: #0284c7; border: 1px solid #38bdf8; color: #ffffff; "
                 "font-weight: bold; font-size: 14px; padding: 9px;"
@@ -1110,6 +990,10 @@ class MainWindow(QMainWindow):
         """Get or initialize the shared UnifiedDetector instance for the workstation."""
         if self._shared_detector is None:
             self._shared_detector = UnifiedDetector()
+            try:
+                self.update_class_names(self._shared_detector.get_class_names())
+            except Exception as exc:
+                logger.warning("Failed to sync class names from shared detector: %s", exc)
         return self._shared_detector
 
     def get_batch_detector(self) -> UnifiedDetector:
@@ -1155,14 +1039,18 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.status_bar.showMessage("Ініціалізація інференсу...")
 
+        shared_det = self.get_shared_detector()
+        is_turbo = hasattr(self, "rb_mode_turbo") and self.rb_mode_turbo.isChecked()
         # Asynchronous inference worker
         self._worker = InferenceWorker(
             image_source=image_source,
             altitude=alt,
             vram_mb=vram,
             conf_threshold=conf_thresh,
-            detector=self.get_shared_detector(),
+            detector=shared_det,
+            class_names=shared_det.get_class_names() if hasattr(shared_det, "get_class_names") else None,
             is_mock=self._is_mock_image,
+            is_turbo=is_turbo,
             parent=self,
         )
         self._worker.progress_changed.connect(self._on_worker_progress)
@@ -1209,13 +1097,15 @@ class MainWindow(QMainWindow):
 
         # Retain styling based on analysis state
         if self.is_analysis_active:
-            self.btn_toggle_analysis.setText("⏹ Зупинити аналіз")
+            self.btn_toggle_analysis.setText("Зупинити аналіз")
+            self.btn_toggle_analysis.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
             self.btn_toggle_analysis.setStyleSheet(
                 "background-color: #ef4444; border: 1px solid #f87171; color: #ffffff; "
                 "font-weight: bold; font-size: 14px; padding: 9px;"
             )
         else:
-            self.btn_toggle_analysis.setText("▶ Почати аналіз")
+            self.btn_toggle_analysis.setText("Почати аналіз")
+            self.btn_toggle_analysis.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
             self.btn_toggle_analysis.setStyleSheet(
                 "background-color: #0284c7; border: 1px solid #38bdf8; color: #ffffff; "
                 "font-weight: bold; font-size: 14px; padding: 9px;"
@@ -1285,25 +1175,41 @@ class MainWindow(QMainWindow):
         """Prompt operator for directories and launch batch triage filtering."""
         input_dir = self._current_folder
         if not input_dir or not Path(input_dir).is_dir():
-            input_dir = QFileDialog.getExistingDirectory(
+            dialog_in = QFileDialog(
                 self,
                 "Оберіть вхідну папку з аерофотознімками для пакетного аналізу",
                 "",
-                QFileDialog.Option.ShowDirsOnly,
             )
-            if not input_dir:
+            dialog_in.setFileMode(QFileDialog.FileMode.Directory)
+            dialog_in.setOption(QFileDialog.Option.ShowDirsOnly, True)
+            dialog_in.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+            dialog_in.setStyleSheet(DARK_TACTICAL_STYLE)
+            if not dialog_in.exec():
                 return
+            selected = dialog_in.selectedFiles()
+            if not selected:
+                return
+            input_dir = selected[0]
             self._current_folder = input_dir
 
         input_path = Path(input_dir).resolve()
         default_out = str(input_path.parent / f"{input_path.name}_detected")
 
-        output_dir = QFileDialog.getExistingDirectory(
+        dialog_out = QFileDialog(
             self,
             f"Оберіть папку для збереження результатів (за замовчуванням: {input_path.name}_detected)",
             default_out,
-            QFileDialog.Option.ShowDirsOnly,
         )
+        dialog_out.setFileMode(QFileDialog.FileMode.Directory)
+        dialog_out.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog_out.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog_out.setStyleSheet(DARK_TACTICAL_STYLE)
+        if dialog_out.exec():
+            selected = dialog_out.selectedFiles()
+            output_dir = selected[0] if selected else default_out
+        else:
+            output_dir = default_out
+
         if not output_dir or Path(output_dir).resolve() == input_path:
             output_dir = default_out
 
@@ -1322,7 +1228,8 @@ class MainWindow(QMainWindow):
         conf_thresh = self.slider_conf.value() / 100.0
 
         self.is_analysis_active = True
-        self.btn_toggle_analysis.setText("⏹ Зупинити аналіз")
+        self.btn_toggle_analysis.setText("Зупинити аналіз")
+        self.btn_toggle_analysis.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.btn_toggle_analysis.setStyleSheet(
             "background-color: #ef4444; border: 1px solid #f87171; color: #ffffff; "
             "font-weight: bold; font-size: 14px; padding: 9px;"
@@ -1344,13 +1251,17 @@ class MainWindow(QMainWindow):
                 pass
             self._batch_worker.cancel()
 
+        batch_det = self.get_batch_detector()
+        is_turbo = hasattr(self, "rb_mode_turbo") and self.rb_mode_turbo.isChecked()
         self._batch_worker = BatchTriageWorker(
             input_folder=str(input_p),
             output_folder=str(output_folder),
             altitude=alt,
             vram_mb=vram,
             conf_threshold=conf_thresh,
-            detector=self.get_batch_detector(),
+            detector=batch_det,
+            class_names=batch_det.get_class_names() if hasattr(batch_det, "get_class_names") else None,
+            is_turbo=is_turbo,
             parent=self,
         )
         self._batch_worker.progress_changed.connect(self._on_batch_progress)

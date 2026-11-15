@@ -12,12 +12,15 @@ Executes autonomous validation across:
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import platform
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Ensure repository root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent
@@ -37,6 +40,11 @@ COLOR_RESET = "\033[0m"
 
 
 def print_banner(title: str) -> None:
+    """Print a formatted ANSI banner to stdout.
+
+    Args:
+        title: Header title text.
+    """
     sep = "=" * 80
     print(f"\n{COLOR_CYAN}{COLOR_BOLD}{sep}")
     print(f" {title.center(78)}")
@@ -44,14 +52,29 @@ def print_banner(title: str) -> None:
 
 
 def log_pass(message: str) -> None:
+    """Print a formatted PASS check message.
+
+    Args:
+        message: Diagnostic message.
+    """
     print(f"  {COLOR_GREEN}[OK] PASS:{COLOR_RESET} {message}")
 
 
 def log_fail(message: str) -> None:
+    """Print a formatted FAIL check message.
+
+    Args:
+        message: Diagnostic error message.
+    """
     print(f"  {COLOR_RED}[ERROR] FAIL:{COLOR_RESET} {message}")
 
 
 def log_warn(message: str) -> None:
+    """Print a formatted WARNING check message.
+
+    Args:
+        message: Diagnostic warning message.
+    """
     print(f"  {COLOR_YELLOW}[WARN] WARNING:{COLOR_RESET} {message}")
 
 
@@ -73,10 +96,16 @@ def get_current_memory_mb() -> float:
 # Test 1: C++ / Python DRY Binding (libtiling_core)
 # =============================================================================
 def validate_tiling_core_dry() -> bool:
+    """Validate C++ / Python DRY binding (pytiling_core) on 8K frame geometry.
+
+    Returns:
+        True if all checks pass, False otherwise.
+    """
     print(f"{COLOR_BOLD}[TEST 1/5] C++ / Python DRY Binding (libtiling_core){COLOR_RESET}")
 
     candidate_paths = [
         REPO_ROOT / "build",
+        REPO_ROOT / "build" / "Release",
         REPO_ROOT / "build" / "bindings",
         REPO_ROOT / "bindings",
     ]
@@ -97,9 +126,9 @@ def validate_tiling_core_dry() -> bool:
 
     cfg = pytiling_core.calculate_tiling_params(width, height, altitude, vram_mb)
 
-    # Validate tile size selection from discrete grid [320, 416, 512, 640]
-    if cfg.tile_size not in [320, 416, 512, 640]:
-        log_fail(f"Selected tile_size {cfg.tile_size} is not in [320, 416, 512, 640]")
+    # Validate tile size selection from discrete grid [320, 416, 512, 640, 736]
+    if cfg.tile_size not in [320, 416, 512, 640, 736]:
+        log_fail(f"Selected tile_size {cfg.tile_size} is not in [320, 416, 512, 640, 736]")
         return False
     log_pass(f"Discrete tile size correctly chosen: {cfg.tile_size}px (T_calc formula applied)")
 
@@ -139,6 +168,11 @@ def validate_tiling_core_dry() -> bool:
 # Test 2: Offset Mapping Geometry
 # =============================================================================
 def validate_offset_mapping_geometry() -> bool:
+    """Validate offset mapping geometry and sub-pixel scaling accuracy.
+
+    Returns:
+        True if all checks pass, False otherwise.
+    """
     print(f"\n{COLOR_BOLD}[TEST 2/5] Offset Mapping Geometry & Boundary Precision{COLOR_RESET}")
 
     import pytiling_core
@@ -193,6 +227,11 @@ def validate_offset_mapping_geometry() -> bool:
 # Test 3: Headless Inference Dispatcher & Memory Safety
 # =============================================================================
 def validate_inference_dispatcher_and_memory() -> bool:
+    """Validate headless inference dispatcher, session pool, and zero-leak memory invariance.
+
+    Returns:
+        True if all checks pass, False otherwise.
+    """
     print(f"\n{COLOR_BOLD}[TEST 3/5] Headless Inference Dispatcher & Memory Safety{COLOR_RESET}")
 
     import numpy as np
@@ -247,6 +286,11 @@ def validate_inference_dispatcher_and_memory() -> bool:
 # Test 4: PySide6 Off-Screen GUI & Non-Destructive Overlay
 # =============================================================================
 def validate_gui_offscreen_overlay() -> bool:
+    """Validate PySide6 off-screen GUI rendering and non-destructive vector overlay.
+
+    Returns:
+        True if all checks pass, False otherwise.
+    """
     print(f"\n{COLOR_BOLD}[TEST 4/5] PySide6 Off-Screen GUI & Non-Destructive Vector Overlay{COLOR_RESET}")
 
     from PySide6.QtGui import QColor, QPixmap
@@ -326,6 +370,11 @@ def validate_gui_offscreen_overlay() -> bool:
 # Test 5: Packaging Artifacts & Distribution Integrity
 # =============================================================================
 def validate_packaging_artifacts() -> bool:
+    """Validate packaging artifacts and distribution integrity.
+
+    Returns:
+        True if all checks pass, False otherwise.
+    """
     print(f"\n{COLOR_BOLD}[TEST 5/5] Packaging Artifacts & Distribution Integrity{COLOR_RESET}")
 
     # 1. Check app.spec
@@ -380,6 +429,11 @@ def validate_packaging_artifacts() -> bool:
 # Main Suite Runner & Summary Table
 # =============================================================================
 def main() -> int:
+    """Execute the full E2E validation suite and print summary report.
+
+    Returns:
+        Exit code (0 on success, 1 on failure).
+    """
     start_time = time.perf_counter()
     print_banner("E2E SYSTEM VALIDATION & ARCHITECTURAL AUDIT SUITE")
 

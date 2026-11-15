@@ -16,13 +16,6 @@
  *  6. to_json_string()  → stdout       (lightweight metadata only)
  */
 
-#include "cuda_slicer.cuh"
-#include "postprocess.hpp"
-#include "tiling_math.hpp"
-#include "trt_detector.hpp"
-
-#include <cuda_runtime.h>
-
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -37,10 +30,20 @@
 #include <unordered_map>
 #include <vector>
 
+#include <cuda_runtime.h>
+
+#include "cuda_slicer.cuh"
+#include "postprocess.hpp"
+#include "tiling_math.hpp"
+#include "trt_detector.hpp"
+
 // ============================================================================
 // VRAM Telemetry
 // ============================================================================
 
+/**
+ * @brief Snapshot of GPU device memory utilization in bytes and megabytes.
+ */
 struct VramInfo
 {
     size_t free_bytes{0};
@@ -52,6 +55,9 @@ struct VramInfo
     double used_mb() const { return static_cast<double>(used_bytes) / (1024.0 * 1024.0); }
 };
 
+/**
+ * @brief Query current GPU memory utilization via CUDA runtime API.
+ */
 VramInfo query_vram()
 {
     VramInfo info;
@@ -63,7 +69,7 @@ VramInfo query_vram()
 static void print_vram_status(const std::string &stage)
 {
     VramInfo v = query_vram();
-    std::cerr << "[VRAM] " << stage << ": Used = "
+    std::cerr << "[libtiling_core][INFO] VRAM (" << stage << "): Used = "
               << std::fixed << std::setprecision(2) << v.used_mb() << " MB  ("
               << v.free_mb() << " MB free / "
               << v.total_mb() << " MB total)\n";
@@ -75,7 +81,7 @@ static void print_vram_status(const std::string &stage)
 
 static void generate_synthetic_frame(uint8_t *h_img, int width, int height)
 {
-    std::cerr << "[Pipeline] Generating synthetic frame ("
+    std::cerr << "[libtiling_core][INFO] Generating synthetic frame ("
               << width << "x" << height << ")...\n";
     for (int y = 0; y < height; ++y)
     {
@@ -151,7 +157,9 @@ public:
             detectors_[s] = std::make_unique<TRTDetector>();
     }
 
-    /// Try to load a .engine file for the given square resolution.
+    /**
+     * @brief Attempt to load a serialized .engine file for the given square resolution.
+     */
     bool loadModel(int size, const std::string &path)
     {
         auto it = detectors_.find(size);
@@ -159,12 +167,14 @@ public:
             return false;
 
         bool ok = it->second->loadEngine(path);
-        std::cerr << "[DetectorPool] " << (ok ? "Loaded" : "FAILED to load")
+        std::cerr << (ok ? "[libtiling_core][INFO] Loaded" : "[libtiling_core][ERROR] FAILED to load")
                   << " engine " << size << "x" << size << " from " << path << "\n";
         return ok;
     }
 
-    /// Scan a directory for engine files using canonical naming patterns.
+    /**
+     * @brief Scan a directory for engine files using canonical naming patterns.
+     */
     void scanDirectory(const std::string &dir)
     {
         if (dir.empty())
@@ -188,15 +198,18 @@ public:
         }
     }
 
-    /// Returns the detector instance for the given resolution (always non-null
-    /// for supported sizes; nullptr for unsupported sizes).
+    /**
+     * @brief Return the detector instance for the given resolution (nullptr if unsupported).
+     */
     TRTDetector *getDetector(int size)
     {
         auto it = detectors_.find(size);
         return (it != detectors_.end()) ? it->second.get() : nullptr;
     }
 
-    /// True iff an engine was successfully loaded for this resolution.
+    /**
+     * @brief Check whether an engine was successfully loaded for this resolution.
+     */
     bool hasLoadedEngine(int size) const
     {
         auto it = detectors_.find(size);
@@ -330,15 +343,15 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
     if (vram_available_mb == 0)
         vram_available_mb = query_vram().free_bytes / (1024ULL * 1024ULL);
 
-    std::cerr << "[Pipeline] VRAM available for tiling : " << vram_available_mb << " MB\n"
-              << "[Pipeline] Altitude telemetry        : " << opt.altitude << " m\n"
-              << "[Pipeline] Frame size                : " << opt.width << "x" << opt.height << "\n";
+    std::cerr << "[libtiling_core][INFO] VRAM available for tiling : " << vram_available_mb << " MB\n"
+              << "[libtiling_core][INFO] Altitude telemetry        : " << opt.altitude << " m\n"
+              << "[libtiling_core][INFO] Frame size                : " << opt.width << "x" << opt.height << "\n";
 
     // ------------------------------------------------------------------
     // Step 1: Upload 8K frame to VRAM (zero disk I/O)
     // ------------------------------------------------------------------
     const size_t img_bytes = static_cast<size_t>(opt.width) * opt.height * 3;
-    std::cerr << "[Pipeline] Allocating source buffer ("
+    std::cerr << "[libtiling_core][INFO] Allocating source buffer ("
               << (img_bytes / (1024ULL * 1024ULL)) << " MB) in VRAM...\n";
 
     uint8_t *d_src_img = d_external_frame; // use caller-supplied frame if provided
@@ -349,7 +362,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
         int device_count = 0;
         if (cudaGetDeviceCount(&device_count) != cudaSuccess || device_count == 0)
         {
-            std::cerr << "[Pipeline] SKIP/WARNING: No CUDA device available. Skipping pipeline execution.\n";
+            std::cerr << "[libtiling_core][WARN] No CUDA device available. Skipping pipeline execution.\n";
             result.return_code = 0;
             return result;
         }
@@ -357,7 +370,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
         cudaError_t err = cudaMalloc(&d_src_img, img_bytes);
         if (err != cudaSuccess)
         {
-            std::cerr << "[Pipeline] FATAL: cudaMalloc source frame: "
+            std::cerr << "[libtiling_core][ERROR] cudaMalloc source frame: "
                       << cudaGetErrorString(err) << "\n";
             result.return_code = 1;
             return result;
@@ -372,7 +385,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
         if (err != cudaSuccess)
         {
-            std::cerr << "[Pipeline] FATAL: cudaMemcpy H->D: "
+            std::cerr << "[libtiling_core][ERROR] cudaMemcpy H->D: "
                       << cudaGetErrorString(err) << "\n";
             cudaFree(d_src_img);
             result.return_code = 1;
@@ -387,7 +400,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
     TilingConfig tiling_cfg = calculate_tiling_params(
         opt.width, opt.height, opt.altitude, vram_available_mb);
 
-    std::cerr << "[Pipeline] TilingConfig:\n"
+    std::cerr << "[libtiling_core][INFO] TilingConfig:\n"
               << "  Selected tile resolution : " << tiling_cfg.tile_size
               << "x" << tiling_cfg.tile_size << " (M_selected)\n"
               << "  Overlap (O_lap)          : " << tiling_cfg.overlap << "\n"
@@ -410,20 +423,21 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
         pool.loadModel(640, opt.engine_640);
 
     const int target_size = tiling_cfg.tile_size;
-    TRTDetector *detector = pool.getDetector(target_size);
+    const int model_size = (target_size == 736) ? 640 : target_size;
+    TRTDetector *detector = pool.getDetector(model_size);
     if (!detector)
     {
-        std::cerr << "[Pipeline] FATAL: unsupported tile size " << target_size << "\n";
+        std::cerr << "[libtiling_core][ERROR] Unsupported tile size " << target_size << "\n";
         if (owns_frame)
             cudaFree(d_src_img);
         result.return_code = 1;
         return result;
     }
 
-    const bool has_engine = pool.hasLoadedEngine(target_size);
+    const bool has_engine = pool.hasLoadedEngine(model_size);
     if (!has_engine)
     {
-        std::cerr << "[Pipeline] Notice: no engine loaded — "
+        std::cerr << "[libtiling_core][WARN] No engine loaded — "
                      "using synthetic detections for validation.\n";
     }
 
@@ -436,11 +450,11 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
                                   ? std::min(static_cast<size_t>(opt.max_tiles), total_tiles)
                                   : total_tiles;
 
-    std::cerr << "[Pipeline] Processing " << tile_count
+    std::cerr << "[libtiling_core][INFO] Processing " << tile_count
               << " tiles (max_tiles=" << opt.max_tiles << ", grid="
               << total_tiles << ")...\n";
 
-    const size_t tile_floats = static_cast<size_t>(3) * target_size * target_size;
+    const size_t tile_floats = static_cast<size_t>(3) * model_size * model_size;
     const size_t tile_bytes = tile_floats * sizeof(float);
     const int src_stride = opt.width * 3;
 
@@ -461,17 +475,17 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
         cudaError_t err = cudaMalloc(&d_slice, tile_bytes);
         if (err != cudaSuccess)
         {
-            std::cerr << "[Pipeline] WARN: cudaMalloc tile " << i << ": "
+            std::cerr << "[libtiling_core][WARN] cudaMalloc tile " << i << ": "
                       << cudaGetErrorString(err) << " — skipping\n";
             continue; // d_slice is null; nothing to free
         }
 
         // 4b. Zero-copy bilinear extraction: src VRAM → slice VRAM
         err = extract_tile_gpu(d_src_img, src_stride, opt.width, opt.height,
-                               trect, target_size, d_slice);
+                               trect, model_size, d_slice);
         if (err != cudaSuccess)
         {
-            std::cerr << "[Pipeline] WARN: extract_tile_gpu tile " << i << ": "
+            std::cerr << "[libtiling_core][WARN] extract_tile_gpu tile " << i << ": "
                       << cudaGetErrorString(err) << " — skipping\n";
             cudaFree(d_slice); // ← must free before continue
             continue;
@@ -483,7 +497,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
         // Validation fallback: inject synthetic objects visible in this tile
         if (local_dets.empty() && !has_engine)
-            local_dets = generate_synthetic_tile_detections(tile, target_size);
+            local_dets = generate_synthetic_tile_detections(tile, model_size);
 
         // 4d. CRITICAL: immediately free tile slice from VRAM
         cudaFree(d_slice);
@@ -491,7 +505,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
 
         // 4e. Remap tile-local coordinates → global 8K frame coordinates
         std::vector<GlobalDetection> remapped =
-            remap_offsets(local_dets, tile, target_size, static_cast<int>(i));
+            remap_offsets(local_dets, tile, model_size, static_cast<int>(i));
         all_raw.insert(all_raw.end(), remapped.begin(), remapped.end());
 
         if (opt.verbose)
@@ -514,10 +528,10 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
                                    ? result.loop_ms / static_cast<double>(result.tiles_processed)
                                    : 0.0;
 
-    std::cerr << "[Pipeline] Tile loop : " << std::fixed << std::setprecision(2)
+    std::cerr << "[libtiling_core][INFO] Tile loop : " << std::fixed << std::setprecision(2)
               << result.loop_ms << " ms total  ("
               << ms_per_tile << " ms/tile)\n"
-              << "[Pipeline] Raw detections before NMS : " << result.raw_detections << "\n";
+              << "[libtiling_core][INFO] Raw detections before NMS : " << result.raw_detections << "\n";
 
     // ------------------------------------------------------------------
     // Step 5: Cluster-DIoU-NMS across tile-overlap boundaries
@@ -530,7 +544,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
     result.nms_ms = std::chrono::duration<double, std::milli>(t_nms_end - t_nms_start).count();
     result.final_detections = final_dets.size();
 
-    std::cerr << "[Pipeline] Cluster-DIoU-NMS : " << result.nms_ms << " ms  →  "
+    std::cerr << "[libtiling_core][INFO] Cluster-DIoU-NMS : " << result.nms_ms << " ms  →  "
               << result.final_detections << " detection(s) after deduplication\n";
 
     // ------------------------------------------------------------------
@@ -542,7 +556,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
     // ------------------------------------------------------------------
     // Step 7: Teardown — free owned VRAM, verify no leak
     // ------------------------------------------------------------------
-    std::cerr << "[Pipeline] Releasing source frame from VRAM...\n";
+    std::cerr << "[libtiling_core][INFO] Releasing source frame from VRAM...\n";
     if (owns_frame && d_src_img)
     {
         cudaFree(d_src_img);
@@ -556,7 +570,7 @@ PipelineResult run_pipeline(const PipelineOptions &opt,
     const auto t_end = std::chrono::high_resolution_clock::now();
     result.total_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
-    std::cerr << "[Pipeline] Total time : " << result.total_ms << " ms\n"
+    std::cerr << "[libtiling_core][INFO] Total time : " << result.total_ms << " ms\n"
               << "=========================================================\n";
 
     return result;

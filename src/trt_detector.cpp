@@ -1,126 +1,169 @@
+/**
+ * @file trt_detector.cpp
+ * @brief Implementation of the TensorRT inference wrapper using the modern TensorRT I/O Tensor API.
+ */
+
 #include "trt_detector.hpp"
-#include <NvInfer.h>
-#include <cuda_runtime_api.h>
-#include <iostream>
+
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <vector>
 
-// 1. Кастомний логер TensorRT (замкнений у цьому файлі)
-class Logger : public nvinfer1::ILogger
-{
-    void log(Severity severity, const char *msg) noexcept override
-    {
-        if (severity <= Severity::kWARNING)
-        {
-            std::cout << "[TensorRT] " << msg << std::endl;
-        }
-    }
-} gLogger;
+#include <cuda_runtime_api.h>
+#include <NvInfer.h>
 
-// RAII Deleter для об'єктів TensorRT замість застарілого .destroy()
-struct TRTDeleter
+#ifndef CUDA_CHECK
+#define CUDA_CHECK(call)                                                                      \
+    do                                                                                        \
+    {                                                                                         \
+        cudaError_t err__ = (call);                                                           \
+        if (err__ != cudaSuccess)                                                             \
+        {                                                                                     \
+            std::cerr << "[libtiling_core][ERROR] CUDA error in " << __FILE__ << ":"          \
+                      << __LINE__ << " (" << cudaGetErrorString(err__) << ")" << std::endl;   \
+        }                                                                                     \
+    } while (0)
+#endif
+
+namespace
 {
-    template <typename T>
-    void operator()(T *obj) const
+
+    /**
+     * @brief File-scoped TensorRT logger forwarding warnings and errors with unified prefix.
+     */
+    class Logger : public nvinfer1::ILogger
     {
-        if (obj)
+        void log(Severity severity, const char *msg) noexcept override
         {
-            delete obj; // Новий стандарт TensorRT API
+            if (severity <= Severity::kERROR)
+            {
+                std::cerr << "[libtiling_core][ERROR] TensorRT: " << msg << std::endl;
+            }
+            else if (severity == Severity::kWARNING)
+            {
+                std::cout << "[libtiling_core][WARN] TensorRT: " << msg << std::endl;
+            }
         }
-    }
-};
+    } g_logger;
+
+    /**
+     * @brief RAII deleter for TensorRT interface objects.
+     */
+    struct TrtDeleter
+    {
+        template <typename T>
+        void operator()(T *obj) const
+        {
+            if (obj)
+            {
+                delete obj;
+            }
+        }
+    };
+
+} // namespace
 
 struct TRTDetector::Impl
 {
-    std::unique_ptr<nvinfer1::IRuntime, TRTDeleter> runtime;
-    std::unique_ptr<nvinfer1::ICudaEngine, TRTDeleter> engine;
-    std::unique_ptr<nvinfer1::IExecutionContext, TRTDeleter> context;
+    std::unique_ptr<nvinfer1::IRuntime, TrtDeleter> runtime_;
+    std::unique_ptr<nvinfer1::ICudaEngine, TrtDeleter> engine_;
+    std::unique_ptr<nvinfer1::IExecutionContext, TrtDeleter> context_;
 
-    void *d_input{nullptr};
-    void *d_output{nullptr};
-    size_t input_size{0};
-    size_t output_size{0};
+    void *d_input_{nullptr};
+    void *d_output_{nullptr};
+    size_t input_size_{0};
+    size_t output_size_{0};
 
     ~Impl()
     {
-        if (d_input)
-            cudaFree(d_input);
-        if (d_output)
-            cudaFree(d_output);
+        if (d_input_)
+        {
+            CUDA_CHECK(cudaFree(d_input_));
+        }
+        if (d_output_)
+        {
+            CUDA_CHECK(cudaFree(d_output_));
+        }
     }
 };
 
-TRTDetector::TRTDetector() : pImpl_(new Impl()) {}
+TRTDetector::TRTDetector() : p_impl_(new Impl()) {}
+
 TRTDetector::~TRTDetector()
 {
-    delete pImpl_;
+    delete p_impl_;
 }
 
 bool TRTDetector::loadEngine(const std::string &engine_path)
 {
-    // 1. Зчитування файлу .engine у бінарному режимі
+    // Read serialized .engine file in binary mode.
     std::ifstream file(engine_path, std::ios::binary);
     if (!file.good())
     {
-        std::cerr << "Failed to open engine file: " << engine_path << std::endl;
+        std::cerr << "[libtiling_core][ERROR] Failed to open engine file: " << engine_path << std::endl;
         return false;
     }
 
     file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
+    size_t size = static_cast<size_t>(file.tellg());
     file.seekg(0, std::ios::beg);
 
     std::vector<char> engine_data(size);
-    file.read(engine_data.data(), size);
+    file.read(engine_data.data(), static_cast<std::streamsize>(size));
     file.close();
 
-    // 2. Ініціалізація Runtime
-    pImpl_->runtime.reset(nvinfer1::createInferRuntime(gLogger));
-    if (!pImpl_->runtime)
+    // Initialize TensorRT runtime.
+    p_impl_->runtime_.reset(nvinfer1::createInferRuntime(g_logger));
+    if (!p_impl_->runtime_)
     {
-        std::cerr << "Failed to create TensorRT Runtime" << std::endl;
+        std::cerr << "[libtiling_core][ERROR] Failed to create TensorRT Runtime" << std::endl;
         return false;
     }
 
-    // 3. Десеріалізація CUDA Engine
-    pImpl_->engine.reset(pImpl_->runtime->deserializeCudaEngine(engine_data.data(), size));
-    if (!pImpl_->engine)
+    // Deserialize CUDA engine.
+    p_impl_->engine_.reset(p_impl_->runtime_->deserializeCudaEngine(engine_data.data(), size));
+    if (!p_impl_->engine_)
     {
-        std::cerr << "Failed to deserialize CUDA engine" << std::endl;
+        std::cerr << "[libtiling_core][ERROR] Failed to deserialize CUDA engine" << std::endl;
         return false;
     }
 
-    // 4. Створення контексту виконання (Execution Context)
-    pImpl_->context.reset(pImpl_->engine->createExecutionContext());
-    if (!pImpl_->context)
+    // Create execution context.
+    p_impl_->context_.reset(p_impl_->engine_->createExecutionContext());
+    if (!p_impl_->context_)
     {
-        std::cerr << "Failed to create execution context" << std::endl;
+        std::cerr << "[libtiling_core][ERROR] Failed to create execution context" << std::endl;
         return false;
     }
 
-    // 5. Автоматичне розрахування розмірів входів/виходів VRAM (через I/O Tensor API)
-    const char *input_name = pImpl_->engine->getIOTensorName(0);
-    const char *output_name = pImpl_->engine->getIOTensorName(1);
+    // Compute VRAM input and output buffer dimensions via the I/O Tensor API.
+    const char *input_name = p_impl_->engine_->getIOTensorName(0);
+    const char *output_name = p_impl_->engine_->getIOTensorName(1);
 
-    auto in_dims = pImpl_->engine->getTensorShape(input_name);
-    auto out_dims = pImpl_->engine->getTensorShape(output_name);
+    auto in_dims = p_impl_->engine_->getTensorShape(input_name);
+    auto out_dims = p_impl_->engine_->getTensorShape(output_name);
 
-    // Розрахунок розміру тензора у байтах: batch * C * H * W * sizeof(float)
     size_t in_elements = 1;
     for (int i = 0; i < in_dims.nbDims; ++i)
-        in_elements *= in_dims.d[i];
-    pImpl_->input_size = in_elements * sizeof(float);
+    {
+        in_elements *= static_cast<size_t>(in_dims.d[i]);
+    }
+    p_impl_->input_size_ = in_elements * sizeof(float);
 
     size_t out_elements = 1;
     for (int i = 0; i < out_dims.nbDims; ++i)
-        out_elements *= out_dims.d[i];
-    pImpl_->output_size = out_elements * sizeof(float);
+    {
+        out_elements *= static_cast<size_t>(out_dims.d[i]);
+    }
+    p_impl_->output_size_ = out_elements * sizeof(float);
 
-    // 6. Виділення VRAM під вихідний буфер
-    if (pImpl_->d_output)
-        cudaFree(pImpl_->d_output);
-    cudaMalloc(&pImpl_->d_output, pImpl_->output_size);
+    // Allocate device memory for the output buffer.
+    if (p_impl_->d_output_)
+    {
+        CUDA_CHECK(cudaFree(p_impl_->d_output_));
+    }
+    CUDA_CHECK(cudaMalloc(&p_impl_->d_output_, p_impl_->output_size_));
 
     return true;
 }
@@ -128,27 +171,46 @@ bool TRTDetector::loadEngine(const std::string &engine_path)
 std::vector<Detection> TRTDetector::infer(const float *d_input_tensor)
 {
     std::vector<Detection> detections;
-    if (!pImpl_->engine || !pImpl_->context)
+    if (!p_impl_->engine_ || !p_impl_->context_)
+    {
         return detections;
+    }
 
-    // Оновлений TensorRT I/O Tensor API (Замість застарілих Bindings)
-    const char *input_name = pImpl_->engine->getIOTensorName(0);
-    const char *output_name = pImpl_->engine->getIOTensorName(1);
+    const char *input_name = p_impl_->engine_->getIOTensorName(0);
+    const char *output_name = p_impl_->engine_->getIOTensorName(1);
 
-    // Встановлюємо адреси тензорів у VRAM
-    pImpl_->context->setTensorAddress(input_name, const_cast<float *>(d_input_tensor));
-    pImpl_->context->setTensorAddress(output_name, pImpl_->d_output);
-
-    // Запуск асинхронного або синхронного інференсу
-    pImpl_->context->enqueueV3(0);
+    // Bind device tensor addresses and enqueue inference on the default CUDA stream.
+    p_impl_->context_->setTensorAddress(input_name, const_cast<float *>(d_input_tensor));
+    p_impl_->context_->setTensorAddress(output_name, p_impl_->d_output_);
+    p_impl_->context_->enqueueV3(0);
 
     return detections;
 }
 
-// Повертає обсяг пам'яті у байтах, виділений під вхідний та вихідний буфери TensorRT
+std::vector<std::vector<Detection>> TRTDetector::infer_batch(const float *d_batch_tensor, int batch_size, int tile_size)
+{
+    std::vector<std::vector<Detection>> results;
+    if (batch_size <= 0)
+    {
+        return results;
+    }
+
+    results.reserve(static_cast<size_t>(batch_size));
+    const size_t tile_elements = static_cast<size_t>(3) * tile_size * tile_size;
+
+    for (int i = 0; i < batch_size; ++i)
+    {
+        const float *d_slice = d_batch_tensor ? (d_batch_tensor + i * tile_elements) : nullptr;
+        results.push_back(infer(d_slice));
+    }
+    return results;
+}
+
 size_t TRTDetector::getDeviceMemoryUsage() const
 {
-    if (!pImpl_)
+    if (!p_impl_)
+    {
         return 0;
-    return pImpl_->input_size + pImpl_->output_size;
+    }
+    return p_impl_->input_size_ + p_impl_->output_size_;
 }

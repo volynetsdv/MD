@@ -4,5 +4,9 @@ ultralytics
 PySide6
 onnxruntime-gpu
 onnx>=1.14.0
+numpy
+opencv-python
+pyyaml>=6.0
+psutil
 pytest>=7.0.0
 pytest-qt
