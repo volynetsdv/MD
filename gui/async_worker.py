@@ -30,7 +30,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from gui.canvas_viewer import DEFAULT_CLASS_NAMES
 from src.detector_dispatcher import Detection, UnifiedDetector, calculate_safe_batch_size
 
-logger = logging.getLogger("InferenceWorker")
+logger = logging.getLogger(__name__)
 
 # Attempt pytiling_core import
 _pytiling_available = False
@@ -205,7 +205,7 @@ def py_cluster_diou_nms(
     for cls in classes:
         cls_boxes = [d for d in candidates if d.class_id == cls]
 
-        # --- Containment / IoS Suppression (Intersection over Smaller >= 0.88) ---
+        # --- Containment / IoS Suppression & Asymmetric Weak Part Suppression ---
         num_cls = len(cls_boxes)
         if num_cls > 1:
             ios_suppressed = [False] * num_cls
@@ -229,16 +229,41 @@ def py_cluster_diou_nms(
                     min_area = min(area_i, area_j)
                     max_area = max(area_i, area_j)
 
-                    # A box is considered a nested edge fragment if it is contained within the larger box
-                    # (containment >= 0.88) and has a substantially smaller area (min_area <= 0.80 * max_area).
-                    # Comparable full detections across tile seams are preserved for DIoU weighted coordinate averaging.
-                    if containment >= 0.88 and min_area <= 0.80 * max_area:
-                        if area_i < area_j:
-                            cls_boxes[j].conf = max(cls_boxes[j].conf, cls_boxes[i].conf)
+                    # Step 2.2: Fast cross-tile containment (IoS >= 0.72)
+                    is_containment = containment >= 0.72 and min_area <= 0.85 * max_area
+
+                    # Step 2.3: Asymmetric weak part suppression (IoS >= 0.50 and conf_weak <= 0.55 * conf_strong)
+                    conf_i = cls_boxes[i].conf
+                    conf_j = cls_boxes[j].conf
+                    is_asymmetric_weak = False
+                    if containment >= 0.50:
+                        if conf_i <= 0.55 * conf_j:
+                            is_asymmetric_weak = True
+                        elif conf_j <= 0.55 * conf_i:
+                            is_asymmetric_weak = True
+
+                    if is_containment or is_asymmetric_weak:
+                        # Step 3: Envelope Union coordinate expansion
+                        min_x = min(cls_boxes[i].x, cls_boxes[j].x)
+                        min_y = min(cls_boxes[i].y, cls_boxes[j].y)
+                        max_x = max(cls_boxes[i].x + cls_boxes[i].w, cls_boxes[j].x + cls_boxes[j].w)
+                        max_y = max(cls_boxes[i].y + cls_boxes[i].h, cls_boxes[j].y + cls_boxes[j].h)
+                        max_conf = max(conf_i, conf_j)
+
+                        if area_i < area_j or (is_asymmetric_weak and conf_i <= 0.55 * conf_j):
+                            cls_boxes[j].x = min_x
+                            cls_boxes[j].y = min_y
+                            cls_boxes[j].w = max_x - min_x
+                            cls_boxes[j].h = max_y - min_y
+                            cls_boxes[j].conf = max_conf
                             ios_suppressed[i] = True
                             break
                         else:
-                            cls_boxes[i].conf = max(cls_boxes[i].conf, cls_boxes[j].conf)
+                            cls_boxes[i].x = min_x
+                            cls_boxes[i].y = min_y
+                            cls_boxes[i].w = max_x - min_x
+                            cls_boxes[i].h = max_y - min_y
+                            cls_boxes[i].conf = max_conf
                             ios_suppressed[j] = True
 
             cls_boxes = [cls_boxes[k] for k in range(num_cls) if not ios_suppressed[k]]
@@ -320,6 +345,20 @@ def py_cluster_diou_nms(
             to_suppress = sub_idx[diou >= eff_thresh]
             if to_suppress.size > 0:
                 suppressed[to_suppress] = True
+                # Step 3: Envelope Union expansion across seams
+                curr_b = cls_boxes[i]
+                for s_idx in to_suppress:
+                    sup_b = cls_boxes[s_idx]
+                    if sup_b.tile_id != curr_b.tile_id:
+                        min_x = min(curr_b.x, sup_b.x)
+                        min_y = min(curr_b.y, sup_b.y)
+                        max_x = max(curr_b.x + curr_b.w, sup_b.x + sup_b.w)
+                        max_y = max(curr_b.y + curr_b.h, sup_b.y + sup_b.h)
+                        curr_b.x = min_x
+                        curr_b.y = min_y
+                        curr_b.w = max_x - min_x
+                        curr_b.h = max_y - min_y
+                        curr_b.conf = max(curr_b.conf, sup_b.conf)
 
     return result
 

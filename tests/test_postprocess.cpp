@@ -1,3 +1,8 @@
+/**
+ * @file test_postprocess.cpp
+ * @brief Unit tests for coordinate remapping, containment IoS, Cluster-DIoU-NMS, and JSON output.
+ */
+
 #include "postprocess.hpp"
 
 #include <cassert>
@@ -101,12 +106,15 @@ void test_seam_detection_merging()
         CHECK_NEAR(m.conf, 0.92f, 0.001f, "Merged confidence is max of cluster");
         CHECK(m.class_id == 0, "Merged class_id is 0");
 
-        // Merged box should be confidence-weighted average:
-        // total_weight = 0.85 + 0.92 = 1.77
-        // x = (450 * 0.85 + 451 * 0.92) / 1.77 = 450.52
-        // y = (200 * 0.85 + 199 * 0.92) / 1.77 = 199.48
-        CHECK_NEAR(m.x, 450.52f, 0.1f, "Merged X is weighted average");
-        CHECK_NEAR(m.y, 199.48f, 0.1f, "Merged Y is weighted average");
+        // Merged box should use Envelope Union:
+        // x_min = min(450.0, 451.0) = 450.0
+        // y_min = min(200.0, 199.0) = 199.0
+        // x_max = max(450 + 60, 451 + 59) = 510.0 -> w = 60.0
+        // y_max = max(200 + 40, 199 + 41) = 240.0 -> h = 41.0
+        CHECK_NEAR(m.x, 450.0f, 0.1f, "Merged X is envelope min");
+        CHECK_NEAR(m.y, 199.0f, 0.1f, "Merged Y is envelope min");
+        CHECK_NEAR(m.w, 60.0f, 0.1f, "Merged W is envelope width");
+        CHECK_NEAR(m.h, 41.0f, 0.1f, "Merged H is envelope height");
     }
 
     // Step 4: JSON serialization
@@ -307,6 +315,150 @@ void test_containment_ios_suppression()
     }
 }
 
+// ---------------------------------------------------------------------------
+// 9. Test: Boundary Isolation - interior detections preserved without pairing
+// ---------------------------------------------------------------------------
+void test_boundary_isolation_interior_preservation()
+{
+    std::printf("--- Running test_boundary_isolation_interior_preservation ---\n");
+
+    TileRect tile0{0, 0, 512, 512};
+    TileRect tile1{400, 0, 512, 512};
+    std::vector<TileRect> tiles = {tile0, tile1};
+
+    // tile0 overlap is [400, 512], delta_x = 56, safe zone right bound = 344
+    // Object 0 is well inside tile 0 interior (x=100..140 < 344)
+    GlobalDetection int0{
+        .x = 100.0f, .y = 100.0f, .w = 40.0f, .h = 40.0f, .conf = 0.90f, .class_id = 0, .tile_id = 0};
+
+    // tile1 overlap is [400, 512], delta_x = 56, safe zone left bound = 568
+    // Object 1 is well inside tile 1 interior (x=600..640 > 568)
+    GlobalDetection int1{
+        .x = 600.0f, .y = 100.0f, .w = 40.0f, .h = 40.0f, .conf = 0.88f, .class_id = 0, .tile_id = 1};
+
+    std::vector<GlobalDetection> input = {int0, int1};
+    auto result = cluster_diou_nms(input, tiles, /*diou_threshold=*/0.5f);
+
+    CHECK(result.size() == 2, "Both interior detections must be preserved without merge");
+    if (result.size() == 2)
+    {
+        CHECK_NEAR(result[0].x, 100.0f, 0.01f, "Interior 0 X preserved");
+        CHECK_NEAR(result[1].x, 600.0f, 0.01f, "Interior 1 X preserved");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 10. Test: Fast cross-tile containment threshold at 0.72
+// ---------------------------------------------------------------------------
+void test_containment_threshold_72()
+{
+    std::printf("--- Running test_containment_threshold_72 ---\n");
+
+    TileRect tile0{0, 0, 512, 512};
+    TileRect tile1{400, 0, 512, 512};
+    std::vector<TileRect> tiles = {tile0, tile1};
+
+    // Box A in Tile 0 on the seam: [440..500], area = 60 * 40 = 2400
+    GlobalDetection box_a{
+        .x = 440.0f, .y = 200.0f, .w = 60.0f, .h = 40.0f, .conf = 0.85f, .class_id = 0, .tile_id = 0};
+
+    // Box B in Tile 1 on the seam: [470..510], area = 40 * 40 = 1600
+    // Intersection: [470..500] -> w = 30, h = 40, area = 1200
+    // IoS = 1200 / 1600 = 0.75 (>= 0.72 but < 0.88)
+    // min_area / max_area = 1600 / 2400 = 0.667 <= 0.85
+    // IoU = 1200 / 2800 = 0.428 (< 0.50)
+    GlobalDetection box_b{
+        .x = 470.0f, .y = 200.0f, .w = 40.0f, .h = 40.0f, .conf = 0.80f, .class_id = 0, .tile_id = 1};
+
+    float ios = calculate_containment(box_a, box_b);
+    CHECK(ios >= 0.72f && ios < 0.88f, "Containment is in [0.72, 0.88) range");
+
+    std::vector<GlobalDetection> input = {box_a, box_b};
+    auto result = cluster_diou_nms(input, tiles, /*diou_threshold=*/0.5f);
+
+    CHECK(result.size() == 1, "0.72 containment must merge the seam duplicate");
+    if (result.size() == 1)
+    {
+        CHECK_NEAR(result[0].x, 440.0f, 0.01f, "Envelope union X min");
+        CHECK_NEAR(result[0].w, 70.0f, 0.01f, "Envelope union W (510 - 440 = 70)");
+        CHECK_NEAR(result[0].conf, 0.85f, 0.001f, "Merged confidence");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. Test: Asymmetric weak part suppression (IoS >= 0.50 & conf_weak <= 0.55 * conf_strong)
+// ---------------------------------------------------------------------------
+void test_asymmetric_weak_part_suppression()
+{
+    std::printf("--- Running test_asymmetric_weak_part_suppression ---\n");
+
+    TileRect tile0{0, 0, 512, 512};
+    TileRect tile1{400, 0, 512, 512};
+    std::vector<TileRect> tiles = {tile0, tile1};
+
+    // Strong box in Tile 0: [440..500], area = 2400, conf = 0.90
+    GlobalDetection box_strong{
+        .x = 440.0f, .y = 200.0f, .w = 60.0f, .h = 40.0f, .conf = 0.90f, .class_id = 0, .tile_id = 0};
+
+    // Weak cut-off fragment in Tile 1: [478..518], area = 1600, conf = 0.40
+    // Intersection: [478..500] -> w = 22, h = 40, area = 880
+    // IoS = 880 / 1600 = 0.55 (>= 0.50 but < 0.72)
+    // conf_weak (0.40) <= 0.55 * conf_strong (0.495)
+    GlobalDetection box_weak{
+        .x = 478.0f, .y = 200.0f, .w = 40.0f, .h = 40.0f, .conf = 0.40f, .class_id = 0, .tile_id = 1};
+
+    float ios = calculate_containment(box_strong, box_weak);
+    CHECK(ios >= 0.50f && ios < 0.72f, "Containment is in [0.50, 0.72) range");
+
+    std::vector<GlobalDetection> input = {box_strong, box_weak};
+    auto result = cluster_diou_nms(input, tiles, /*diou_threshold=*/0.5f);
+
+    CHECK(result.size() == 1, "Asymmetric weak detection must be suppressed / merged");
+    if (result.size() == 1)
+    {
+        CHECK_NEAR(result[0].x, 440.0f, 0.01f, "Envelope union X min");
+        CHECK_NEAR(result[0].w, 78.0f, 0.01f, "Envelope union W (518 - 440 = 78)");
+        CHECK_NEAR(result[0].conf, 0.90f, 0.001f, "Strong confidence preserved");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 12. Test: Elongated object crossing the seam reconstructed with Envelope Union
+// ---------------------------------------------------------------------------
+void test_elongated_object_seam_merging()
+{
+    std::printf("--- Running test_elongated_object_seam_merging ---\n");
+
+    TileRect tile0{0, 0, 512, 512};
+    TileRect tile1{400, 0, 512, 512};
+    std::vector<TileRect> tiles = {tile0, tile1};
+
+    // Long object spanning x=330..480 across the seam (total w=150)
+    // Tile 0 sees left segment [330..460], w=130, h=30 (reaches seam boundary)
+    GlobalDetection part_left{
+        .x = 330.0f, .y = 200.0f, .w = 130.0f, .h = 30.0f, .conf = 0.82f, .class_id = 2, .tile_id = 0};
+
+    // Tile 1 sees right segment [380..480], w=100, h=30 (reaches seam boundary)
+    // Intersection: [380..460] -> w=80, h=30 -> area = 2400
+    // min_area = 100 * 30 = 3000
+    // IoS = 2400 / 3000 = 0.80 >= 0.72
+    GlobalDetection part_right{
+        .x = 380.0f, .y = 200.0f, .w = 100.0f, .h = 30.0f, .conf = 0.88f, .class_id = 2, .tile_id = 1};
+
+    std::vector<GlobalDetection> input = {part_left, part_right};
+    auto result = cluster_diou_nms(input, tiles, /*diou_threshold=*/0.5f);
+
+    CHECK(result.size() == 1, "Elongated object segments must merge into 1 complete target");
+    if (result.size() == 1)
+    {
+        CHECK_NEAR(result[0].x, 330.0f, 0.01f, "Envelope union recovers full left bound");
+        CHECK_NEAR(result[0].y, 200.0f, 0.01f, "Envelope union Y matches");
+        CHECK_NEAR(result[0].w, 150.0f, 0.01f, "Envelope union recovers full width (480 - 330 = 150)");
+        CHECK_NEAR(result[0].h, 30.0f, 0.01f, "Height preserved");
+        CHECK_NEAR(result[0].conf, 0.88f, 0.001f, "Max confidence preserved");
+    }
+}
+
 int main()
 {
     test_seam_detection_merging();
@@ -317,6 +469,10 @@ int main()
     test_736_remap_scaling();
     test_640_canonical_scaling();
     test_containment_ios_suppression();
+    test_boundary_isolation_interior_preservation();
+    test_containment_threshold_72();
+    test_asymmetric_weak_part_suppression();
+    test_elongated_object_seam_merging();
 
     if (g_failures == 0)
     {

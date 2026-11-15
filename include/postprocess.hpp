@@ -1,11 +1,16 @@
-#pragma once
+/**
+ * @file postprocess.hpp
+ * @brief Coordinate remapping, spatial overlap metrics, Cluster-DIoU-NMS, and JSON serialization.
+ */
 
-#include "tiling_math.hpp"
-#include "trt_detector.hpp"
+#pragma once
 
 #include <cstddef>
 #include <string>
 #include <vector>
+
+#include "tiling_math.hpp"
+#include "trt_detector.hpp"
 
 #ifndef TILE_RECT_DEFINED
 #define TILE_RECT_DEFINED
@@ -14,10 +19,10 @@
  */
 struct TileRect
 {
-    int x{0}; ///< top-left corner x
-    int y{0}; ///< top-left corner y
-    int w{0}; ///< width in pixels
-    int h{0}; ///< height in pixels
+    int x{0}; ///< Top-left corner X coordinate (px).
+    int y{0}; ///< Top-left corner Y coordinate (px).
+    int w{0}; ///< Width in pixels (px).
+    int h{0}; ///< Height in pixels (px).
 };
 #endif
 
@@ -109,17 +114,20 @@ float calculate_containment(const GlobalDetection &a, const GlobalDetection &b);
  * @brief Cluster-DIoU-NMS: clusters and merges duplicate bounding boxes at tile overlap boundaries.
  *
  * When duplicate detections of the same object occur across overlapping tile seams, they are merged
- * into a single unified detection using confidence-weighted coordinate averaging:
- *   x_merged = sum(conf_i * x_i) / sum(conf_i)
- *   y_merged = sum(conf_i * y_i) / sum(conf_i)
- *   w_merged = sum(conf_i * w_i) / sum(conf_i)
- *   h_merged = sum(conf_i * h_i) / sum(conf_i)
+ * into a single unified detection using envelope union expansion:
+ *   x_min = min(x_i)
+ *   y_min = min(y_i)
+ *   x_max = max(x_i + w_i)
+ *   y_max = max(y_i + h_i)
+ *   w_merged = x_max - x_min
+ *   h_merged = y_max - y_min
  *   conf_merged = max(conf_i)
  *
  * Merging is performed only at overlap boundaries:
- * - If tiles list is provided, only boxes intersecting tile overlap zones are candidates for merging.
- * - If tile_id is present, detections within the same tile are preserved (not merged), while cross-tile
- *   overlaps are merged.
+ * - Interior detections lying strictly inside a tile's safe zone are immediately preserved (B_interior).
+ * - Only border candidates are tested in sweep-and-prune using cross-tile containment (IoS >= 0.72),
+ *   asymmetric weak part suppression (IoS >= 0.50 with conf_weak <= 0.55 * conf_strong), and DIoU clustering.
+ * - Detections within the same tile are preserved (not merged), while cross-tile overlaps are merged.
  *
  * @param detections      Global detections collected from all tiles.
  * @param diou_threshold  DIoU threshold above which boxes of the same class are clustered (default 0.5).

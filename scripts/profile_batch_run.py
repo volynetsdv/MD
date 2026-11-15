@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -46,6 +47,8 @@ from gui.async_worker import (
     remap_detection_to_global,
 )
 from src.detector_dispatcher import UnifiedDetector
+
+logger = logging.getLogger(__name__)
 
 
 def get_gpu_vram_mb() -> float:

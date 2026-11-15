@@ -1,27 +1,42 @@
+/**
+ * @file cuda_slicer.cu
+ * @brief CUDA kernel and host wrappers for zero-copy tile extraction, bilinear resizing, and normalization.
+ */
+
 #include "cuda_slicer.cuh"
 
 #include <cmath>
 
-namespace {
+namespace
+{
 
-constexpr int kBlockX = 32;
-constexpr int kBlockY = 8;
-constexpr int kMaxBatchSize = 64;
+    constexpr int kBlockX = 32;
+    constexpr int kBlockY = 8;
+    constexpr int kMaxBatchSize = 64;
 
-__constant__ TileRect c_batch_rects[kMaxBatchSize];
+    __constant__ TileRect c_batch_rects[kMaxBatchSize];
 
-// ---------------------------------------------------------------------------
-// Kernel: 3D grid (target_size_x, target_size_y, batch_size)
-// Bilinear sampling from source image with on-the-fly BGR->RGB conversion and normalization.
-// ---------------------------------------------------------------------------
-__global__ void extract_batch_tiles_kernel(
-    const uint8_t* __restrict__ d_src,
-    int src_stride_bytes,
-    int src_w, int src_h,
-    int batch_size,
-    int target_size,
-    bool bgr_to_rgb,
-    float* __restrict__ d_dst)
+    /**
+     * @brief CUDA 3D grid kernel for batched bilinear tile extraction, optional BGR-to-RGB conversion,
+     *        and [0, 1] float32 NCHW normalization.
+     *
+     * @param d_src            Device pointer to source BGR image (uint8).
+     * @param src_stride_bytes Row stride of the source image in bytes.
+     * @param src_w            Source image width in pixels.
+     * @param src_h            Source image height in pixels.
+     * @param batch_size       Number of tiles in the current batch.
+     * @param target_size      Output spatial resolution per tile.
+     * @param bgr_to_rgb       Whether to swap B and R channels during extraction.
+     * @param d_dst            Device pointer to destination NCHW float32 batch tensor.
+     */
+    __global__ void extract_batch_tiles_kernel(
+        const uint8_t *__restrict__ d_src,
+        int src_stride_bytes,
+        int src_w, int src_h,
+        int batch_size,
+        int target_size,
+        bool bgr_to_rgb,
+        float *__restrict__ d_dst)
 {
     const int ox = blockIdx.x * blockDim.x + threadIdx.x;
     const int oy = blockIdx.y * blockDim.y + threadIdx.y;

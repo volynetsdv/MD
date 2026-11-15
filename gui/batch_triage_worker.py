@@ -30,7 +30,7 @@ from gui.async_worker import (
 )
 from src.detector_dispatcher import DEFAULT_CLASS_NAMES, UnifiedDetector
 
-logger = logging.getLogger("BatchTriageWorker")
+logger = logging.getLogger(__name__)
 
 
 class BatchTriageWorker(QThread):

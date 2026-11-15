@@ -39,7 +39,7 @@ except ImportError:
             except ImportError:
                 pass
 
-logger = logging.getLogger("DetectorDispatcher")
+logger = logging.getLogger(__name__)
 
 # Ensure NVIDIA cuDNN runtime libraries are accessible by ONNX Runtime if installed via pip
 try:

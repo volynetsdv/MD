@@ -23,6 +23,9 @@
  * used by the C++ Inference Engine — no duplicate logic exists.
  */
 
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
 #include "postprocess.hpp"
 #include "tiling_math.hpp"
 #include "trt_detector.hpp"
@@ -30,9 +33,6 @@
 #ifdef HAVE_CUDA
 #include "cuda_slicer.cuh"
 #endif
-
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
