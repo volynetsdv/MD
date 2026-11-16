@@ -80,7 +80,7 @@ jobs:
       - name: "[Linux] Install CUDA 12 / cuDNN 9 / TensorRT runtime wheels for bundling"
         if: runner.os == 'Linux'
         run: |
-          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-nvjitlink-cu12
+          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-nvjitlink-cu12 nvidia-cufft-cu12
           pip install tensorrt-cu12 || echo "tensorrt-cu12 not available on runner index; continuing with ONNX CUDA bundle"
 
       - name: "[Windows] Configure DirectML & optional CUDA/TensorRT runtime wheels"
@@ -89,7 +89,7 @@ jobs:
         run: |
           pip uninstall -y onnxruntime-gpu onnxruntime
           pip install onnx onnxruntime-directml
-          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 ; if ($LASTEXITCODE -ne 0) { Write-Host "Optional CUDA wheels skipped" }
+          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 ; if ($LASTEXITCODE -ne 0) { Write-Host "Optional CUDA wheels skipped" }
 
       - name: Prepare model assets
         run: |

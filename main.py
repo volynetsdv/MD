@@ -81,23 +81,34 @@ def _configure_bundled_runtime_libs() -> None:
             )
             preload_patterns = (
                 "libcudart.so.12*",
+                "libcudart.so.13*",
                 "libnvJitLink.so.12*",
-                "libcublasLt.so.12*",
-                "libcublas.so.12*",
+                "libnvJitLink.so.13*",
                 "libcufft.so.11*",
+                "libcufft.so.12*",
                 "libcurand.so.10*",
+                "libcublasLt.so.12*",
+                "libcublasLt.so.13*",
+                "libcublas.so.12*",
+                "libcublas.so.13*",
                 "libcudnn.so.9*",
                 "libcudnn_*.so.9*",
+                "libnvinfer_builder_resource_*.so*",
+                "libnvinfer.so.11*",
                 "libnvinfer.so.*",
+                "libnvinfer_plugin.so.11*",
                 "libnvinfer_plugin.so.*",
+                "libnvonnxparser.so.11*",
                 "libnvonnxparser.so.*",
             )
-            for d in unique_dirs:
-                for pat in preload_patterns:
+            preloaded_paths: set[str] = set()
+            for pat in preload_patterns:
+                for d in unique_dirs:
                     for lib_file in sorted(glob.glob(str(d / pat))):
-                        if os.path.isfile(lib_file):
+                        if os.path.isfile(lib_file) and lib_file not in preloaded_paths:
                             try:
                                 ctypes.CDLL(lib_file, mode=ctypes.RTLD_GLOBAL)
+                                preloaded_paths.add(lib_file)
                             except Exception:
                                 pass
     except Exception:

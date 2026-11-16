@@ -41,11 +41,10 @@ _site_roots.extend([Path(p) for p in sys.path if p])
 
 _seen_bins = set()
 _lib_ext = "*.dll" if sys.platform == "win32" else "*.so*"
-_ALLOWED_NVIDIA_SUBSTRS = ("cublas", "cudnn", "cudart", "cuda_runtime", "nvjitlink")
+_ALLOWED_NVIDIA_SUBSTRS = ("cublas", "cudnn", "cudart", "cuda_runtime", "nvjitlink", "cufft")
 _EXCLUDED_CUDA_MODULES = (
     "cusparse",
     "cusolver",
-    "cufft",
     "curand",
     "nccl",
     "nvshmem",
@@ -85,17 +84,19 @@ for _root in _site_roots:
     if _nvidia_root.exists():
         for _pkg in sorted(_nvidia_root.glob("*")):
             _pkg_name = _pkg.name.lower()
-            if not any(sub in _pkg_name for sub in _ALLOWED_NVIDIA_SUBSTRS):
+            is_generic_cu = _pkg_name.startswith("cu") and any(c.isdigit() for c in _pkg_name)
+            if not (any(sub in _pkg_name for sub in _ALLOWED_NVIDIA_SUBSTRS) or is_generic_cu):
                 continue
-            for _sub in (_pkg / "lib", _pkg / "bin"):
-                if _sub.exists():
+            for _sub in (_pkg / "lib", _pkg / "bin", _pkg):
+                if _sub.exists() and _sub.is_dir():
                     for _f in sorted(_sub.glob(_lib_ext)):
                         if _f.is_file() and not _is_unwanted_lib(_f.name):
+                            if is_generic_cu and not any(sub in _f.name.lower() for sub in _ALLOWED_NVIDIA_SUBSTRS):
+                                continue
                             _rf = str(_f.resolve())
                             if _rf not in _seen_bins:
                                 _seen_bins.add(_rf)
-                                _rel_dir = str(_f.parent.relative_to(_root))
-                                binaries.append((str(_f), _rel_dir))
+                                binaries.append((str(_f), "."))
     for _trt_dir_name in ("tensorrt_libs", "tensorrt"):
         _trt_dir = _root / _trt_dir_name
         if _trt_dir.exists():
@@ -104,8 +105,26 @@ for _root in _site_roots:
                     _rf = str(_f.resolve())
                     if _rf not in _seen_bins:
                         _seen_bins.add(_rf)
-                        _rel_dir = str(_f.parent.relative_to(_root))
-                        binaries.append((str(_f), _rel_dir))
+                        binaries.append((str(_f), "."))
+
+# Also search system library paths for dynamically loaded builder resources and CUDA libraries
+if sys.platform.startswith("linux"):
+    for _sys_dir in (
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda/lib",
+        "/usr/lib64",
+        "/usr/lib",
+    ):
+        _sd = Path(_sys_dir)
+        if _sd.exists():
+            for _pat in ("*builder_resource*", "*libcufft*"):
+                for _f in sorted(_sd.glob(_pat)):
+                    if _f.is_file() and not _f.name.startswith("do_not_link") and not _is_unwanted_lib(_f.name):
+                        _rf = str(_f.resolve())
+                        if _rf not in _seen_bins:
+                            _seen_bins.add(_rf)
+                            binaries.append((str(_f), "."))
 
 # Include config files
 config_dir = repo_root / "config"
@@ -179,18 +198,24 @@ for dest, src, typecode in a.binaries:
     if _is_unwanted_lib(base_name) or _is_unwanted_lib(str(dest)):
         continue
 
+    lower_base = base_name.lower()
+    # Flatten all CUDA and TensorRT binaries directly into root of _internal ('.')
+    # so dynamic linker dlopen() resolves them via $ORIGIN/_internal RPATH without subfolder issues
+    if (
+        any(sub in lower_base for sub in ("cublas", "cudnn", "cudart", "cufft", "nvjitlink", "nvinfer", "nvonnxparser"))
+        or "builder_resource" in lower_base
+    ):
+        dest = base_name
+
     # On Windows, dynamic library filenames are case-insensitive
     key = base_name.lower() if sys.platform == "win32" else base_name
 
     if key not in _filtered_binaries_by_base:
         _filtered_binaries_by_base[key] = (dest, src, typecode)
     else:
-        # Prefer structured package relative path (e.g. 'nvidia/.../libcublas.so' or 'tensorrt_libs/libnvinfer.so')
-        # over flat root copies ('libcublas.so') to preserve natural wheel layouts.
+        # Prefer flat root destination (dest == base_name)
         existing_dest = _filtered_binaries_by_base[key][0]
-        new_is_nested = ("/" in dest) or ("\\" in dest)
-        old_is_nested = ("/" in existing_dest) or ("\\" in existing_dest)
-        if new_is_nested and not old_is_nested:
+        if dest == base_name and existing_dest != base_name:
             _filtered_binaries_by_base[key] = (dest, src, typecode)
 
 a.binaries = list(_filtered_binaries_by_base.values())
@@ -199,6 +224,9 @@ _filtered_datas = []
 for dest, src, typecode in a.datas:
     base_name = Path(dest).name
     if _is_unwanted_lib(base_name) or _is_unwanted_lib(str(dest)):
+        continue
+    # Do not duplicate shared libraries as datas
+    if base_name in _filtered_binaries_by_base:
         continue
     _filtered_datas.append((dest, src, typecode))
 

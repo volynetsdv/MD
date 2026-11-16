@@ -269,7 +269,7 @@ def build_trt_engine(
 
     # Dynamic batch optimization profile
     input_tensor = network.get_input(0)
-    if input_tensor.shape[0] == -1:
+    if input_tensor.shape[0] <= 0 or input_tensor.shape[0] == -1:
         profile = builder.create_optimization_profile()
         profile.set_shape(
             input_tensor.name,
