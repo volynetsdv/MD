@@ -13,6 +13,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 logging.basicConfig(
@@ -111,6 +112,70 @@ def run_pyinstaller(clean: bool = False) -> bool:
         return False
 
 
+def _format_size(bytes_num: int) -> str:
+    """Format bytes count into human-readable size."""
+    size = float(bytes_num)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
+
+def create_archive() -> Optional[Path]:
+    """Package dist/AerialWorkstation into a single clean distribution archive."""
+    app_dir = DIST_DIR / "AerialWorkstation"
+    if not app_dir.exists():
+        logger.error("Cannot archive: directory %s does not exist.", app_dir)
+        return None
+
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Linux":
+        arch_name = "x86_64" if machine in ("x86_64", "amd64") else machine
+        archive_name = f"AerialWorkstation-Linux-{arch_name}.tar.gz"
+        archive_path = DIST_DIR / archive_name
+        if archive_path.exists():
+            archive_path.unlink()
+        logger.info("Creating Linux release archive: %s ...", archive_path)
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(app_dir, arcname="AerialWorkstation")
+        logger.info(
+            "Archive successfully created: %s (%s)",
+            archive_path,
+            _format_size(archive_path.stat().st_size),
+        )
+        return archive_path
+    elif system == "Windows":
+        arch_name = "x64" if machine in ("x86_64", "amd64") else machine
+        archive_name = f"AerialWorkstation-Windows-{arch_name}.zip"
+        archive_path = DIST_DIR / archive_name
+        if archive_path.exists():
+            archive_path.unlink()
+        logger.info("Creating Windows release archive: %s ...", archive_path)
+        base_name = str(archive_path.with_suffix(""))
+        shutil.make_archive(
+            base_name,
+            "zip",
+            root_dir=str(DIST_DIR),
+            base_dir="AerialWorkstation",
+        )
+        logger.info(
+            "Archive successfully created: %s (%s)",
+            archive_path,
+            _format_size(archive_path.stat().st_size),
+        )
+        return archive_path
+    else:
+        archive_name = f"AerialWorkstation-{system}.tar.gz"
+        archive_path = DIST_DIR / archive_name
+        if archive_path.exists():
+            archive_path.unlink()
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(app_dir, arcname="AerialWorkstation")
+        return archive_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Standalone Distribution")
     parser.add_argument("--clean", action="store_true", help="Clean cache before build")
@@ -131,12 +196,17 @@ def main() -> int:
         build_cpp_core()
 
     success = run_pyinstaller(clean=args.clean)
-    if success:
-        logger.info("=== Build Pipeline Finished Successfully ===")
-        return 0
-    else:
+    if not success:
         logger.error("=== Build Pipeline Failed (PyInstaller error) ===")
         return 1
+
+    archive = create_archive()
+    if archive is None:
+        logger.error("=== Build Pipeline Failed (Archive creation error) ===")
+        return 1
+
+    logger.info("=== Build Pipeline Finished Successfully ===")
+    return 0
 
 
 if __name__ == "__main__":
