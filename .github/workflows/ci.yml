@@ -80,7 +80,7 @@ jobs:
       - name: "[Linux] Install CUDA 12 / cuDNN 9 / TensorRT runtime wheels for bundling"
         if: runner.os == 'Linux'
         run: |
-          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-nvjitlink-cu12
+          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-nvjitlink-cu12 nvidia-cufft-cu12
           pip install tensorrt-cu12 || echo "tensorrt-cu12 not available on runner index; continuing with ONNX CUDA bundle"
 
       - name: "[Windows] Configure DirectML & optional CUDA/TensorRT runtime wheels"
@@ -89,7 +89,7 @@ jobs:
         run: |
           pip uninstall -y onnxruntime-gpu onnxruntime
           pip install onnx onnxruntime-directml
-          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 ; if ($LASTEXITCODE -ne 0) { Write-Host "Optional CUDA wheels skipped" }
+          pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 ; if ($LASTEXITCODE -ne 0) { Write-Host "Optional CUDA wheels skipped" }
 
       - name: Prepare model assets
         run: |
@@ -137,7 +137,7 @@ jobs:
         if: runner.os == 'Linux' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           python build_release.py --skip-cpp --clean
-          if [ ! -f "dist/${{ matrix.archive_name }}" ]; then
+          if ! ls dist/${{ matrix.archive_name }}* 1> /dev/null 2>&1; then
             tar -czf dist/${{ matrix.archive_name }} -C dist AerialWorkstation
           fi
 
@@ -146,7 +146,7 @@ jobs:
         shell: pwsh
         run: |
           python build_release.py --skip-cpp --clean
-          if (-not (Test-Path "dist/${{ matrix.archive_name }}")) {
+          if (-not (Get-ChildItem -Path "dist" -Filter "${{ matrix.archive_name }}*" -ErrorAction SilentlyContinue)) {
             Compress-Archive -Path dist/AerialWorkstation -DestinationPath dist/${{ matrix.archive_name }} -Force
           }
 
@@ -156,7 +156,7 @@ jobs:
         if: success() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development' || startsWith(github.ref, 'refs/tags/v'))
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.archive_name }}
+          path: dist/${{ matrix.archive_name }}*
           retention-days: 14
           if-no-files-found: error
 
@@ -178,8 +178,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release_assets/**/*.tar.gz
-            release_assets/**/*.zip
+            release_assets/**/*.tar.gz*
+            release_assets/**/*.zip*
+          body: |
+            ## Aerial Reconnaissance Workstation Release
+
+            ### Інструкція із запуску на Linux:
+            - **Якщо завантажено єдиний архів (`.tar.gz`):**
+              ```bash
+              tar -xzf AerialWorkstation-Linux-x86_64.tar.gz
+              cd AerialWorkstation
+              ./AerialWorkstation
+              ```
+            - **Якщо архів розбито на частини (`.part*`):**
+              ```bash
+              cat AerialWorkstation-Linux-x86_64.tar.gz.part* | tar -xzf -
+              cd AerialWorkstation
+              ./AerialWorkstation
+              ```
+
+            ### Інструкція із запуску на Windows:
+            - Розпакуйте архів `AerialWorkstation-Windows-x64.zip` та запустіть `AerialWorkstation.exe`.
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('release-{0}', github.sha) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

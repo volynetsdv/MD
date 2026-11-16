@@ -356,7 +356,12 @@ class MainWindow(QMainWindow):
         if is_turbo:
             from src.detector_dispatcher import calculate_safe_batch_size
 
-            b_est = calculate_safe_batch_size(target_tile_size=640, is_turbo=True)
+            b_est = calculate_safe_batch_size(
+                target_tile_size=640,
+                is_turbo=True,
+                execution_provider=getattr(self.detector, "execution_provider", None),
+                supports_dynamic_batch=getattr(self.detector, "supports_dynamic_batch", True),
+            )
             self.status_bar.showMessage(f"Режим швидкодії: Turbo [B={b_est}]", 3000)
         else:
             self.status_bar.showMessage("Режим швидкодії: Стандартний [B=1]", 3000)

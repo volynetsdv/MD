@@ -827,10 +827,17 @@ def process_single_frame_instrumented(
     total_tiles = len(tiles)
     model_size = 640 if tile_size == 736 else tile_size
 
+    try:
+        detector.get_session(model_size)
+    except Exception:
+        pass
+
     batch_size = calculate_safe_batch_size(
         target_tile_size=model_size,
         is_turbo=is_turbo,
         max_cap=turbo_max_cap,
+        execution_provider=detector.execution_provider,
+        supports_dynamic_batch=detector.supports_dynamic_batch,
     )
 
     try:

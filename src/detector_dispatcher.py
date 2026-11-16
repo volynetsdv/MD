@@ -306,12 +306,47 @@ GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 
 
 def _has_cuda_gpu() -> bool:
-    """Return True if an active CUDA-capable GPU is detectable without importing PyTorch."""
-    _, total_mb = UnifiedDetector.query_vram_mb()
-    if total_mb > 0.0:
-        return True
-    if os.path.exists("/dev/nvidia0"):
-        return True
+    """Return True if an active CUDA-capable GPU and functional CUDA runtime are accessible."""
+    cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_vis is not None and cuda_vis.strip().lower() in ("", "-1", "none", "nodevfiles"):
+        return False
+
+    if pytiling_core is not None and hasattr(pytiling_core, "get_gpu_memory_info"):
+        try:
+            _, total_bytes = pytiling_core.get_gpu_memory_info()
+            if total_bytes > 0:
+                return True
+        except Exception:
+            pass
+
+    try:
+        import ctypes
+
+        lib_names = (
+            ("cudart64_12.dll", "cudart64_13.dll", "cudart64_110.dll")
+            if sys.platform == "win32"
+            else ("libcudart.so", "libcudart.so.12", "libcudart.so.13")
+        )
+        for lib_name in lib_names:
+            try:
+                cudart = ctypes.CDLL(lib_name)
+                count = ctypes.c_int(0)
+                if cudart.cudaGetDeviceCount(ctypes.byref(count)) == 0 and count.value > 0:
+                    return True
+            except OSError:
+                continue
+    except Exception:
+        pass
+
+    try:
+        if "torch" in sys.modules:
+            import torch
+
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                return True
+    except Exception:
+        pass
+
     return False
 
 
@@ -321,6 +356,7 @@ def calculate_safe_batch_size(
     max_cap: Optional[int] = None,
     safety_factor: float = 0.80,
     execution_provider: Optional[str] = None,
+    supports_dynamic_batch: bool = True,
 ) -> int:
     """Analytical calculation of the maximum safe tile batch size for Turbo mode (OOM-Safety).
 
@@ -329,12 +365,17 @@ def calculate_safe_batch_size(
         B_target = clamp(B_calc, 1, effective_cap)
     where:
         Delta_tile(S_m) = 110.0 * (S_m / 640.0)^2 [MB]
+        If not is_turbo or not supports_dynamic_batch -> B_target = 1 (strict)
+        If execution_provider == "CPUExecutionProvider" -> B_target = 1 (sequential CPU)
         If VRAM_free_MB < 200 MB -> B_target = 1 (strict OOM guard)
         If max_cap is None:
             If VRAM_free_MB >= 6000 MB: effective_cap = 12 (if S_m <= 416) else 8
             Else: effective_cap = 4
     """
-    if not is_turbo:
+    if not is_turbo or not supports_dynamic_batch:
+        return 1
+
+    if execution_provider == "CPUExecutionProvider":
         return 1
 
     try:
@@ -545,6 +586,11 @@ class InferenceBackend(abc.ABC):
     def is_gpu_accelerated(self) -> bool:
         """Indicate whether the backend leverages hardware GPU acceleration."""
         ...
+
+    @property
+    def supports_dynamic_batch(self) -> bool:
+        """Indicate whether the backend supports dynamic batch size > 1."""
+        return True
 
     @property
     def providers(self) -> List[str]:
@@ -850,10 +896,16 @@ class ONNXRuntimeBackendBase(InferenceBackend):
         super().__init__(models_dir)
         self._providers: List[str] = list(providers) if providers else ["CPUExecutionProvider"]
         self._active_provider: str = self._providers[0] if self._providers else "CPUExecutionProvider"
+        self._supports_dynamic_batch: bool = True
 
     @property
     def name(self) -> BackendType:
         return BackendType.ONNXRUNTIME
+
+    @property
+    def supports_dynamic_batch(self) -> bool:
+        """Indicate whether the backend supports dynamic batch size > 1."""
+        return self._supports_dynamic_batch
 
     @property
     def providers(self) -> List[str]:
@@ -970,35 +1022,62 @@ class ONNXRuntimeBackendBase(InferenceBackend):
         elif actual_providers:
             self._active_provider = actual_providers[0]
 
+        inputs = session.get_inputs() if hasattr(session, "get_inputs") else []
+        if inputs:
+            inp_shape = inputs[0].shape
+            if inp_shape and len(inp_shape) > 0:
+                first_dim = inp_shape[0]
+                if isinstance(first_dim, int) and first_dim == 1:
+                    self._supports_dynamic_batch = False
+                    logger.info(
+                        "ONNXRuntime (%s): Input '%s' has static batch size 1 (shape %s). "
+                        "Configuring supports_dynamic_batch = False.",
+                        self.execution_provider,
+                        inputs[0].name,
+                        inp_shape,
+                    )
+
         self._sessions[size] = session
         logger.info(
-            "ONNXRuntime (%s): Cached session for tile size %d.",
+            "ONNXRuntime (%s): Cached session for tile size %d (dynamic_batch=%s).",
             self.execution_provider,
             size,
+            self._supports_dynamic_batch,
         )
         return session
 
     def run_inference(self, session: Any, input_array: np.ndarray, size: int) -> np.ndarray:
         """Run forward pass via ONNX Runtime with native dynamic batching support."""
-        input_name = session.get_inputs()[0].name
+        if hasattr(session, "get_inputs") and session.get_inputs():
+            input_name = session.get_inputs()[0].name
+        else:
+            input_name = "images"
         b = input_array.shape[0] if input_array.ndim == 4 else 1
 
         if not input_array.flags.c_contiguous:
             input_array = np.ascontiguousarray(input_array)
 
         if b > 1:
+            if not self._supports_dynamic_batch:
+                out_slices = []
+                for i in range(b):
+                    slice_i = np.ascontiguousarray(input_array[i : i + 1])
+                    single_out = session.run(None, {input_name: slice_i})
+                    out_slices.append(single_out[0])
+                return np.concatenate(out_slices, axis=0)
+
             try:
                 outputs = session.run(None, {input_name: input_array})
                 return outputs[0]
             except Exception as exc:
+                self._supports_dynamic_batch = False
                 logger.warning(
                     "ONNXRuntime dynamic batch execution failed for B=%d (size %d): %s. "
-                    "Falling back to sequential slice evaluation.",
+                    "Marking session as fixed batch=1 and falling back to sequential slice evaluation.",
                     b,
                     size,
                     exc,
                 )
-                # Fixed batch size 1 session: evaluate each batch item and concatenate along axis 0
                 out_slices = []
                 for i in range(b):
                     slice_i = np.ascontiguousarray(input_array[i : i + 1])
@@ -1238,6 +1317,11 @@ class UnifiedDetector:
     def execution_provider(self) -> str:
         """Return active execution provider name (e.g. DmlExecutionProvider, CPUExecutionProvider)."""
         return self._backend_strategy.execution_provider
+
+    @property
+    def supports_dynamic_batch(self) -> bool:
+        """Indicate whether the active backend strategy and models support dynamic batch size > 1."""
+        return getattr(self._backend_strategy, "supports_dynamic_batch", True)
 
     @property
     def is_gpu_accelerated(self) -> bool:

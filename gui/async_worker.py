@@ -577,12 +577,21 @@ class InferenceWorker(QThread):
             if self.detector is None:
                 self.detector = UnifiedDetector()
 
+            # Ensure model session is initialized so real active execution provider
+            # (e.g. CPUExecutionProvider if GPU failed) and dynamic batch capability are discovered
+            if not self.is_mock:
+                try:
+                    self.detector.get_session(model_size)
+                except Exception:
+                    pass
+
             # 4. Calculate safe batch size and process tiles
             batch_size = calculate_safe_batch_size(
                 target_tile_size=model_size,
                 is_turbo=self.is_turbo,
                 max_cap=self.turbo_max_cap,
                 execution_provider=self.detector.execution_provider,
+                supports_dynamic_batch=self.detector.supports_dynamic_batch,
             )
 
             d_img = _try_alloc_cuda_source_image(img, self.detector, self.is_mock)
@@ -1013,12 +1022,19 @@ def run_tiled_inference(
     if detector is None:
         detector = UnifiedDetector()
 
+    if not is_mock:
+        try:
+            detector.get_session(model_size)
+        except Exception:
+            pass
+
     turbo_active = bool(turbo_mode) if turbo_mode is not None else bool(is_turbo)
     batch_size = calculate_safe_batch_size(
         target_tile_size=model_size,
         is_turbo=turbo_active,
         max_cap=turbo_max_cap,
         execution_provider=detector.execution_provider,
+        supports_dynamic_batch=detector.supports_dynamic_batch,
     )
 
     d_img = _try_alloc_cuda_source_image(img_rgb, detector, is_mock)
