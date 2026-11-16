@@ -62,9 +62,15 @@ def _is_unwanted_lib(name: str) -> bool:
         # Exclude Windows cross-compilation binaries on Linux
         if "_win_" in nl or "_win." in nl or nl.endswith(".dll"):
             return True
+        # Exclude datacenter-only TensorRT builder resources (sm90 Hopper, sm100 Blackwell DC)
+        # while keeping universal JIT/PTX (_ptx) and consumer SMs (sm75, sm80, sm86, sm89, sm120).
+        if "builder_resource_sm90" in nl or "builder_resource_sm100" in nl:
+            return True
     elif sys.platform == "win32":
         # Exclude Linux cross-compilation binaries on Windows
         if "_linux_" in nl or "_linux." in nl or nl.endswith(".so") or ".so." in nl:
+            return True
+        if "builder_resource_sm90" in nl or "builder_resource_sm100" in nl:
             return True
     for mod in _EXCLUDED_CUDA_MODULES:
         if mod in nl:

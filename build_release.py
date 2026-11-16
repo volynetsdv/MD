@@ -122,8 +122,70 @@ def _format_size(bytes_num: int) -> str:
     return f"{size:.1f} TB"
 
 
-def create_archive() -> Optional[Path]:
-    """Package dist/AerialWorkstation into a single clean distribution archive."""
+MAX_SINGLE_ARCHIVE_BYTES: int = 1950 * 1024 * 1024  # 1950 MB safe limit for GitHub Releases (2048 MB max)
+CHUNK_BYTES: int = 1800 * 1024 * 1024  # 1800 MB chunks when splitting is required
+
+
+def _split_archive_if_needed(archive_path: Path) -> list[Path]:
+    """Split archive into <= 1800 MB chunks if it exceeds GitHub Releases 2GB limit."""
+    file_size = archive_path.stat().st_size
+    if file_size <= MAX_SINGLE_ARCHIVE_BYTES:
+        return [archive_path]
+
+    logger.warning(
+        "Archive %s (%s) exceeds GitHub Releases 2GB limit (threshold: 1950 MB). "
+        "Splitting into %s chunks...",
+        archive_path.name,
+        _format_size(file_size),
+        _format_size(CHUNK_BYTES),
+    )
+
+    part_paths: list[Path] = []
+    part_idx = 0
+    buffer_size = 64 * 1024 * 1024  # 64 MB buffer
+
+    with open(archive_path, "rb") as src:
+        while True:
+            chunk_bytes_written = 0
+            part_name = f"{archive_path.name}.part{part_idx:02d}"
+            part_path = archive_path.parent / part_name
+            if part_path.exists():
+                part_path.unlink()
+
+            with open(part_path, "wb") as dst:
+                while chunk_bytes_written < CHUNK_BYTES:
+                    to_read = min(buffer_size, CHUNK_BYTES - chunk_bytes_written)
+                    data = src.read(to_read)
+                    if not data:
+                        break
+                    dst.write(data)
+                    chunk_bytes_written += len(data)
+
+            if chunk_bytes_written > 0:
+                part_paths.append(part_path)
+                logger.info(
+                    "Created archive chunk: %s (%s)",
+                    part_path.name,
+                    _format_size(part_path.stat().st_size),
+                )
+                part_idx += 1
+            else:
+                if part_path.exists():
+                    part_path.unlink()
+                break
+
+    archive_path.unlink()
+    logger.info(
+        "Removed original oversized archive %s; generated %d part(s): %s",
+        archive_path.name,
+        len(part_paths),
+        [p.name for p in part_paths],
+    )
+    return part_paths
+
+
+def create_archive() -> Optional[list[Path]]:
+    """Package dist/AerialWorkstation into a clean distribution archive with max compression."""
     app_dir = DIST_DIR / "AerialWorkstation"
     if not app_dir.exists():
         logger.error("Cannot archive: directory %s does not exist.", app_dir)
@@ -135,23 +197,23 @@ def create_archive() -> Optional[Path]:
         arch_name = "x86_64" if machine in ("x86_64", "amd64") else machine
         archive_name = f"AerialWorkstation-Linux-{arch_name}.tar.gz"
         archive_path = DIST_DIR / archive_name
-        if archive_path.exists():
-            archive_path.unlink()
-        logger.info("Creating Linux release archive: %s ...", archive_path)
-        with tarfile.open(archive_path, "w:gz") as tar:
+        for old_file in DIST_DIR.glob(f"{archive_name}*"):
+            old_file.unlink()
+        logger.info("Creating Linux release archive (compresslevel=9): %s ...", archive_path)
+        with tarfile.open(archive_path, "w:gz", compresslevel=9) as tar:
             tar.add(app_dir, arcname="AerialWorkstation")
         logger.info(
             "Archive successfully created: %s (%s)",
             archive_path,
             _format_size(archive_path.stat().st_size),
         )
-        return archive_path
+        return _split_archive_if_needed(archive_path)
     elif system == "Windows":
         arch_name = "x64" if machine in ("x86_64", "amd64") else machine
         archive_name = f"AerialWorkstation-Windows-{arch_name}.zip"
         archive_path = DIST_DIR / archive_name
-        if archive_path.exists():
-            archive_path.unlink()
+        for old_file in DIST_DIR.glob(f"{archive_name}*"):
+            old_file.unlink()
         logger.info("Creating Windows release archive: %s ...", archive_path)
         base_name = str(archive_path.with_suffix(""))
         shutil.make_archive(
@@ -165,15 +227,15 @@ def create_archive() -> Optional[Path]:
             archive_path,
             _format_size(archive_path.stat().st_size),
         )
-        return archive_path
+        return _split_archive_if_needed(archive_path)
     else:
         archive_name = f"AerialWorkstation-{system}.tar.gz"
         archive_path = DIST_DIR / archive_name
-        if archive_path.exists():
-            archive_path.unlink()
-        with tarfile.open(archive_path, "w:gz") as tar:
+        for old_file in DIST_DIR.glob(f"{archive_name}*"):
+            old_file.unlink()
+        with tarfile.open(archive_path, "w:gz", compresslevel=9) as tar:
             tar.add(app_dir, arcname="AerialWorkstation")
-        return archive_path
+        return _split_archive_if_needed(archive_path)
 
 
 def main() -> int:
@@ -200,8 +262,8 @@ def main() -> int:
         logger.error("=== Build Pipeline Failed (PyInstaller error) ===")
         return 1
 
-    archive = create_archive()
-    if archive is None:
+    archives = create_archive()
+    if not archives:
         logger.error("=== Build Pipeline Failed (Archive creation error) ===")
         return 1
 

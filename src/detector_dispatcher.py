@@ -306,12 +306,47 @@ GRID_RESOLUTIONS: Tuple[int, ...] = (320, 416, 512, 640)
 
 
 def _has_cuda_gpu() -> bool:
-    """Return True if an active CUDA-capable GPU is detectable without importing PyTorch."""
-    _, total_mb = UnifiedDetector.query_vram_mb()
-    if total_mb > 0.0:
-        return True
-    if os.path.exists("/dev/nvidia0"):
-        return True
+    """Return True if an active CUDA-capable GPU and functional CUDA runtime are accessible."""
+    cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_vis is not None and cuda_vis.strip().lower() in ("", "-1", "none", "nodevfiles"):
+        return False
+
+    if pytiling_core is not None and hasattr(pytiling_core, "get_gpu_memory_info"):
+        try:
+            _, total_bytes = pytiling_core.get_gpu_memory_info()
+            if total_bytes > 0:
+                return True
+        except Exception:
+            pass
+
+    try:
+        import ctypes
+
+        lib_names = (
+            ("cudart64_12.dll", "cudart64_13.dll", "cudart64_110.dll")
+            if sys.platform == "win32"
+            else ("libcudart.so", "libcudart.so.12", "libcudart.so.13")
+        )
+        for lib_name in lib_names:
+            try:
+                cudart = ctypes.CDLL(lib_name)
+                count = ctypes.c_int(0)
+                if cudart.cudaGetDeviceCount(ctypes.byref(count)) == 0 and count.value > 0:
+                    return True
+            except OSError:
+                continue
+    except Exception:
+        pass
+
+    try:
+        if "torch" in sys.modules:
+            import torch
+
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                return True
+    except Exception:
+        pass
+
     return False
 
 
