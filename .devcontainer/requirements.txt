@@ -1,7 +1,8 @@
 pybind11>=2.11.0
 torch
 ultralytics
-PySide6
+# Pin PySide6 < 6.12.0 to avoid Shiboken6 6.12.0 Py_None refcount over-decref (SIGABRT/none_dealloc on Python 3.10/3.11)
+PySide6>=6.8.0,<6.12.0
 onnxruntime-gpu
 onnx>=1.14.0
 numpy
