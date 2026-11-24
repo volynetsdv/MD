@@ -369,3 +369,101 @@ class TestPredictTileAPI:
         assert detector.active_backend_name == "CPUExecutionProvider"
         assert detector.is_gpu_accelerated is False
         assert "silently fell back" in caplog.text
+
+    def test_tensorrt11_build_engine_without_explicit_batch_flag(self, monkeypatch, tmp_path):
+        """Verify TensorRTBackend._build_engine_from_onnx works when EXPLICIT_BATCH is absent (TRT 11)."""
+        import types
+        from src.detector_dispatcher import TensorRTBackend
+
+        captured_flags = []
+
+        class _FakeTensor:
+            name = "images"
+
+        class _FakeNetwork:
+            def get_input(self, idx):
+                return _FakeTensor()
+
+        class _FakeProfile:
+            def __init__(self):
+                self.shapes = []
+
+            def set_shape(self, name, min_s, opt_s, max_s):
+                self.shapes.append((name, min_s, opt_s, max_s))
+
+        class _FakeConfig:
+            def __init__(self):
+                self.profiles = []
+                self.flags = []
+
+            def set_memory_pool_limit(self, pool_type, size):
+                pass
+
+            def set_flag(self, flag):
+                self.flags.append(flag)
+
+            def add_optimization_profile(self, profile):
+                self.profiles.append(profile)
+
+        class _FakeBuilder:
+            platform_has_fast_fp16 = True
+
+            def __init__(self, logger):
+                pass
+
+            def create_network(self, flags=0):
+                captured_flags.append(flags)
+                return _FakeNetwork()
+
+            def create_builder_config(self):
+                return _FakeConfig()
+
+            def create_optimization_profile(self):
+                return _FakeProfile()
+
+            def build_serialized_network(self, network, config):
+                return b"FAKE_TRT11_ENGINE_BYTES"
+
+        class _FakeParser:
+            num_errors = 0
+
+            def __init__(self, network, logger):
+                pass
+
+            def parse_from_file(self, path):
+                return True
+
+        class _FakeLogger:
+            WARNING = 1
+
+            def __init__(self, severity):
+                pass
+
+        # Simulate TensorRT 11 enum where EXPLICIT_BATCH attribute does NOT exist
+        class _FakeNetworkCreationFlagTRT11:
+            STRONGLY_TYPED = 1
+
+        class _FakeMemoryPoolType:
+            WORKSPACE = 0
+
+        class _FakeBuilderFlag:
+            FP16 = 0
+
+        fake_trt = types.SimpleNamespace(
+            Logger=_FakeLogger,
+            Builder=_FakeBuilder,
+            OnnxParser=_FakeParser,
+            NetworkDefinitionCreationFlag=_FakeNetworkCreationFlagTRT11,
+            MemoryPoolType=_FakeMemoryPoolType,
+            BuilderFlag=_FakeBuilderFlag,
+        )
+        monkeypatch.setitem(sys.modules, "tensorrt", fake_trt)
+
+        onnx_dummy = tmp_path / "yolo_640.onnx"
+        onnx_dummy.write_bytes(b"dummy")
+        engine_out = tmp_path / "yolo_640.engine"
+
+        raw = TensorRTBackend._build_engine_from_onnx(onnx_dummy, engine_out, size=640)
+        assert raw == b"FAKE_TRT11_ENGINE_BYTES"
+        assert captured_flags == [0]
+        assert engine_out.read_bytes() == b"FAKE_TRT11_ENGINE_BYTES"

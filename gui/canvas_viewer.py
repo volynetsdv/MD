@@ -11,12 +11,13 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QBrush,
     QColor,
     QFont,
+    QFontMetricsF,
     QMouseEvent,
     QPainter,
     QPen,
@@ -89,6 +90,17 @@ def get_class_color(class_id: int) -> QColor:
 class DetectionItem:
     """Container holding vector graphical primitives for a single detection."""
 
+    __slots__ = (
+        "raw_data",
+        "rect_item",
+        "badge_bg",
+        "text_item",
+        "class_id",
+        "confidence",
+        "rect",
+        "class_name",
+    )
+
     def __init__(
         self,
         raw_data: Dict[str, Any],
@@ -110,19 +122,15 @@ class DetectionItem:
         self.class_name = class_name
 
     def set_visible(self, visible: bool) -> None:
-        """Toggle visibility for all vector primitives of this detection."""
+        """Toggle visibility for this detection root (children inherit visibility in C++ Qt)."""
         self.rect_item.setVisible(visible)
-        self.badge_bg.setVisible(visible)
-        self.text_item.setVisible(visible)
 
     def is_visible(self) -> bool:
         return self.rect_item.isVisible()
 
     def remove_from_scene(self, scene: QGraphicsScene) -> None:
-        """Remove graphical items from the scene cleanly."""
+        """Remove root item from the scene cleanly (Qt removes child items automatically)."""
         scene.removeItem(self.rect_item)
-        scene.removeItem(self.badge_bg)
-        scene.removeItem(self.text_item)
 
 
 class CanvasViewer(QGraphicsView):
@@ -171,6 +179,15 @@ class CanvasViewer(QGraphicsView):
         self._scale_text_with_zoom: bool = getattr(cfg, "scale_overlay_text_with_zoom", True)
         self._base_font_size: int = getattr(cfg, "base_font_size", 10)
         self._box_border_width: int = getattr(cfg, "box_border_width", 2)
+
+        # Cached immutable Qt/GDI resources (never re-created inside per-detection loops)
+        self._badge_font = QFont("SansSerif", self._base_font_size, QFont.Weight.Bold)
+        self._badge_font_metrics = QFontMetricsF(self._badge_font)
+        self._badge_font_height: float = self._badge_font_metrics.height()
+        self._badge_size_cache: Dict[str, Tuple[float, float]] = {}
+        self._badge_text_brush = QBrush(QColor(255, 255, 255))
+        self._badge_bg_brush = QBrush(QColor(15, 23, 42, 220))
+        self._class_style_cache: Dict[int, Tuple[QPen, QPen, QBrush]] = {}
 
         # QActions for UI / toolbar binding
         self.action_show_class_ids_only = QAction("Показувати лише ID класів", self)
@@ -326,20 +343,140 @@ class CanvasViewer(QGraphicsView):
                 - 'class_id': integer class index
                 - Optional: 'class_name'
         """
-        self.clear_detections()
-        self._detections_raw = list(detections_json)
+        self.setUpdatesEnabled(False)
+        self._scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
+        QCoreApplication.sendPostedEvents(self._scene, 0)
+        try:
+            self.clear_detections()
+            self._detections_raw = list(detections_json)
 
-        for det in detections_json:
-            item = self._create_detection_primitive(det)
-            if item is not None:
-                self._detection_items.append(item)
+            # Bind hot-path references locally to minimize per-item Python dispatch overhead
+            scene_add = self._scene.addItem
+            det_items = self._detection_items
+            class_names_get = self._class_names.get
+            style_cache = self._class_style_cache
+            get_class_style = self._get_class_style
+            badge_size_cache = self._badge_size_cache
+            get_badge_dims = self._get_badge_dimensions
+            badge_font = self._badge_font
+            badge_text_brush = self._badge_text_brush
+            badge_bg_brush = self._badge_bg_brush
+            show_ids = self._show_class_ids_only
+            ignore_transform = not self._scale_text_with_zoom
+            ignore_flag = QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations
+            min_conf = self._min_confidence
+            vis_classes = self._visible_classes
+            parse_coords = self._parse_coordinates
+            rect_cls = QGraphicsRectItem
+            text_cls = QGraphicsSimpleTextItem
+            det_cls = DetectionItem
+            qrectf = QRectF
 
-        # Apply current active filters
-        self._apply_filters()
-        self._emit_visible_count()
-        self._scene.update()
-        if self.viewport():
-            self.viewport().update()
+            visible_count = 0
+            for det in detections_json:
+                # Fast-path coordinate extraction for standard (x, y, w, h) payloads
+                if "x" in det and "y" in det and "w" in det and "h" in det:
+                    try:
+                        x = float(det["x"])
+                        y = float(det["y"])
+                        w = float(det["w"])
+                        h = float(det["h"])
+                    except (ValueError, TypeError):
+                        rect = parse_coords(det)
+                        if rect is None:
+                            continue
+                        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+                    else:
+                        if w <= 0.0 or h <= 0.0:
+                            continue
+                        rect = qrectf(x, y, w, h)
+                else:
+                    rect = parse_coords(det)
+                    if rect is None:
+                        continue
+                    x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+
+                class_id = int(det.get("class_id", 0))
+                conf = float(det.get("conf", det.get("confidence", 0.0)))
+                class_name = det.get("class_name")
+                if class_name is None:
+                    class_name = class_names_get(class_id)
+                    if class_name is None:
+                        class_name = f"Клас {class_id}"
+
+                style = style_cache.get(class_id)
+                if style is None:
+                    style = get_class_style(class_id)
+                box_pen, badge_pen, fill_brush = style
+
+                # 1. Root bounding box rectangle (parent=None; sole item added to scene)
+                rect_item = rect_cls(x, y, w, h)
+                rect_item.setPen(box_pen)
+                rect_item.setBrush(fill_brush)
+                rect_item.setZValue(10.0)
+                rect_item.setToolTip(
+                    f"ID: {det.get('id', '-')}\n"
+                    f"Клас: {class_name} ({class_id})\n"
+                    f"Впевненість: {conf:.1%}\n"
+                    f"Координати: X={int(x)}, Y={int(y)}, W={int(w)}, H={int(h)}"
+                )
+
+                # 2. Hierarchical badge pill (child of rect_item) & text label (child of badge_bg)
+                label_text = (
+                    f"#{class_id:02d} | {conf:.1%}" if show_ids else f"{class_name} {conf:.1%}"
+                )
+                dims = badge_size_cache.get(label_text)
+                if dims is None:
+                    dims = get_badge_dims(label_text)
+                badge_w, badge_h = dims
+
+                badge_y = y - badge_h
+                if badge_y < 0.0:
+                    badge_y = y
+
+                badge_bg = rect_cls(0.0, 0.0, badge_w, badge_h, rect_item)
+                badge_bg.setPos(x, badge_y)
+                badge_bg.setPen(badge_pen)
+                badge_bg.setBrush(badge_bg_brush)
+                badge_bg.setZValue(11.0)
+
+                if ignore_transform:
+                    badge_bg.setFlag(ignore_flag, True)
+
+                text_item = text_cls(label_text, badge_bg)
+                text_item.setFont(badge_font)
+                text_item.setBrush(badge_text_brush)
+                text_item.setPos(4.0, 2.0)
+                text_item.setZValue(12.0)
+
+                is_vis = (conf >= min_conf) and (class_id in vis_classes)
+                if not is_vis:
+                    rect_item.setVisible(False)
+                else:
+                    visible_count += 1
+
+                scene_add(rect_item)
+                det_items.append(
+                    det_cls(
+                        raw_data=det,
+                        rect_item=rect_item,
+                        badge_bg=badge_bg,
+                        text_item=text_item,
+                        class_id=class_id,
+                        confidence=conf,
+                        rect=rect,
+                        class_name=class_name,
+                    )
+                )
+
+            self.detections_updated.emit(visible_count)
+        finally:
+            self._scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
+            QCoreApplication.sendPostedEvents(self._scene, 0)
+            self.setUpdatesEnabled(True)
+            self._scene.update()
+            if self.viewport():
+                self.viewport().update()
 
     def set_detections(self, detections_json: List[Dict[str, Any]]) -> None:
         """Set non-destructive vector overlays for detection results (alias for update_detections)."""
@@ -380,29 +517,58 @@ class CanvasViewer(QGraphicsView):
             return f"#{class_id:02d} | {conf:.1%}"
         return f"{class_name} {conf:.1%}"
 
+    def _get_class_style(self, class_id: int) -> Tuple[QPen, QPen, QBrush]:
+        """Return cached (box_pen, badge_pen, fill_brush) for the given class_id."""
+        cached = self._class_style_cache.get(class_id)
+        if cached is not None:
+            return cached
+
+        color = get_class_color(class_id)
+        box_pen = QPen(color, float(self._box_border_width))
+        box_pen.setCosmetic(True)
+
+        badge_pen = QPen(color, 1.0)
+        badge_pen.setCosmetic(True)
+
+        fill_brush = QBrush(QColor(color.red(), color.green(), color.blue(), 28))
+
+        style = (box_pen, badge_pen, fill_brush)
+        self._class_style_cache[class_id] = style
+        return style
+
+    def _get_badge_dimensions(self, label_text: str) -> Tuple[float, float]:
+        """Return cached (badge_w, badge_h) for label_text using cached QFontMetricsF."""
+        dims = self._badge_size_cache.get(label_text)
+        if dims is not None:
+            return dims
+        badge_w = self._badge_font_metrics.horizontalAdvance(label_text) + 8.0
+        badge_h = self._badge_font_height + 4.0
+        dims = (badge_w, badge_h)
+        if len(self._badge_size_cache) > 4096:
+            self._badge_size_cache.clear()
+        self._badge_size_cache[label_text] = dims
+        return dims
+
     def _update_detection_item_visuals(self, item: DetectionItem) -> None:
         """Refresh typography, badge geometry, and transform flags for a single detection."""
-        # 1. Typography & text
+        # 1. Typography & text (exclusively reuse cached font & brushes)
         label_text = self._format_label_text(item.class_id, item.class_name, item.confidence)
         item.text_item.setText(label_text)
-        font = QFont("SansSerif", self._base_font_size, QFont.Weight.Bold)
-        item.text_item.setFont(font)
+        item.text_item.setFont(self._badge_font)
+        item.text_item.setBrush(self._badge_text_brush)
 
-        # 2. Transform flags (ItemIgnoresTransformations)
+        # 2. Transform flags: apply ItemIgnoresTransformations ONLY on badge_bg
+        # (text_item is a child of badge_bg and inherits its transform automatically)
         ignore_transform = not self._scale_text_with_zoom
-        item.text_item.setFlag(
-            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, ignore_transform
-        )
         item.badge_bg.setFlag(
             QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, ignore_transform
         )
+        item.text_item.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, False
+        )
 
-        # 3. Badge background size and position
-        text_rect = item.text_item.boundingRect()
-        badge_padding_x = 4.0
-        badge_padding_y = 2.0
-        badge_w = text_rect.width() + (badge_padding_x * 2.0)
-        badge_h = text_rect.height() + (badge_padding_y * 2.0)
+        # 3. Badge background size and child-local coordinates
+        badge_w, badge_h = self._get_badge_dimensions(label_text)
 
         badge_x = item.rect.x()
         badge_y = item.rect.y() - badge_h
@@ -411,12 +577,11 @@ class CanvasViewer(QGraphicsView):
 
         item.badge_bg.setRect(QRectF(0.0, 0.0, badge_w, badge_h))
         item.badge_bg.setPos(badge_x, badge_y)
-        item.text_item.setPos(badge_x + badge_padding_x, badge_y + badge_padding_y)
+        item.badge_bg.setBrush(self._badge_bg_brush)
+        item.text_item.setPos(4.0, 2.0)
 
-        # 4. Box pen width
-        color = get_class_color(item.class_id)
-        box_pen = QPen(color, float(self._box_border_width))
-        box_pen.setCosmetic(True)
+        # 4. Box pen width (cached per class)
+        box_pen, _badge_pen, _fill_brush = self._get_class_style(item.class_id)
         item.rect_item.setPen(box_pen)
 
     def set_show_class_ids_only(self, show_ids: bool) -> None:
@@ -462,6 +627,10 @@ class CanvasViewer(QGraphicsView):
     def set_base_font_size(self, size: int) -> None:
         """Set base font point size for target badges."""
         self._base_font_size = max(6, min(36, int(size)))
+        self._badge_font.setPointSize(self._base_font_size)
+        self._badge_font_metrics = QFontMetricsF(self._badge_font)
+        self._badge_font_height = self._badge_font_metrics.height()
+        self._badge_size_cache.clear()
         for item in self._detection_items:
             self._update_detection_item_visuals(item)
         self._scene.update()
@@ -474,6 +643,7 @@ class CanvasViewer(QGraphicsView):
     def set_box_border_width(self, width: int) -> None:
         """Set cosmetic border line width in pixels for target bounding boxes."""
         self._box_border_width = max(1, min(10, int(width)))
+        self._class_style_cache.clear()
         for item in self._detection_items:
             self._update_detection_item_visuals(item)
         self._scene.update()
@@ -484,7 +654,7 @@ class CanvasViewer(QGraphicsView):
         return self._box_border_width
 
     def _create_detection_primitive(self, det: Dict[str, Any]) -> Optional[DetectionItem]:
-        """Construct QGraphicsRectItem and QGraphicsSimpleTextItem for a detection."""
+        """Construct hierarchical QGraphicsItem subtree for a detection."""
         rect = self._parse_coordinates(det)
         if rect is None:
             return None
@@ -493,77 +663,52 @@ class CanvasViewer(QGraphicsView):
         conf = float(det.get("conf", det.get("confidence", 0.0)))
         class_name = det.get("class_name", self._class_names.get(class_id, f"Клас {class_id}"))
 
-        color = get_class_color(class_id)
+        box_pen, badge_pen, fill_brush = self._get_class_style(class_id)
 
-        # 1. Bounding box rectangle: cosmetic pen preserves crispness at any zoom level
+        # 1. Root bounding box rectangle (parent=None; sole item added to QGraphicsScene)
+        rect_x = rect.x()
+        rect_y = rect.y()
         rect_item = QGraphicsRectItem(rect)
-        pen = QPen(color, float(self._box_border_width))
-        pen.setCosmetic(True)  # Keeps line width constant on screen regardless of zoom
-        rect_item.setPen(pen)
-
-        # Subtle translucent fill to highlight target area
-        fill_color = QColor(color.red(), color.green(), color.blue(), 28)
-        rect_item.setBrush(QBrush(fill_color))
+        rect_item.setPen(box_pen)
+        rect_item.setBrush(fill_brush)
         rect_item.setZValue(10.0)
 
         tooltip_text = (
             f"ID: {det.get('id', '-')}\n"
             f"Клас: {class_name} ({class_id})\n"
             f"Впевненість: {conf:.1%}\n"
-            f"Координати: X={int(rect.x())}, Y={int(rect.y())}, W={int(rect.width())}, H={int(rect.height())}"
+            f"Координати: X={int(rect_x)}, Y={int(rect_y)}, W={int(rect.width())}, H={int(rect.height())}"
         )
         rect_item.setToolTip(tooltip_text)
 
-        # 2. Text label and contrast background pill for readability over any terrain
+        # 2. Hierarchical badge pill (child of rect_item) & text label (child of badge_bg)
         label_text = self._format_label_text(class_id, class_name, conf)
-        font = QFont("SansSerif", self._base_font_size, QFont.Weight.Bold)
+        badge_w, badge_h = self._get_badge_dimensions(label_text)
 
-        text_item = QGraphicsSimpleTextItem(label_text)
-        text_item.setFont(font)
-        text_item.setBrush(QBrush(Qt.GlobalColor.white))
-        text_item.setZValue(12.0)
+        badge_y = rect_y - badge_h
+        if badge_y < 0.0:
+            badge_y = rect_y
 
-        ignore_transform = not self._scale_text_with_zoom
-        if ignore_transform:
-            text_item.setFlag(
-                QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
-            )
+        badge_bg = QGraphicsRectItem(QRectF(0.0, 0.0, badge_w, badge_h), rect_item)
+        badge_bg.setPos(rect_x, badge_y)
+        badge_bg.setPen(badge_pen)
+        badge_bg.setBrush(self._badge_bg_brush)
+        badge_bg.setZValue(11.0)
 
-        # Text bounding dimensions
-        text_rect = text_item.boundingRect()
-        badge_padding_x = 4.0
-        badge_padding_y = 2.0
-        badge_w = text_rect.width() + (badge_padding_x * 2.0)
-        badge_h = text_rect.height() + (badge_padding_y * 2.0)
-
-        # Position badge above top-left of box, or inside if too close to image top edge
-        badge_x = rect.x()
-        badge_y = rect.y() - badge_h
-        if badge_y < 0:
-            badge_y = rect.y()
-
-        badge_bg = QGraphicsRectItem(QRectF(0.0, 0.0, badge_w, badge_h))
-        badge_bg.setPos(badge_x, badge_y)
-        if ignore_transform:
+        # ItemIgnoresTransformations ONLY on badge_bg (text_item inherits parent transform)
+        if not self._scale_text_with_zoom:
             badge_bg.setFlag(
                 QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
             )
 
-        # Dark high-contrast background with colored accent border
-        bg_color = QColor(15, 23, 42, 220)  # semi-opaque dark slate
-        badge_pen = QPen(color, 1.0)
-        badge_pen.setCosmetic(True)
-        badge_bg.setPen(badge_pen)
-        badge_bg.setBrush(QBrush(bg_color))
-        badge_bg.setZValue(11.0)
+        text_item = QGraphicsSimpleTextItem(label_text, badge_bg)
+        text_item.setFont(self._badge_font)
+        text_item.setBrush(self._badge_text_brush)
+        text_item.setPos(4.0, 2.0)
+        text_item.setZValue(12.0)
 
-        # Set text position inside badge
-        text_item.setPos(badge_x + badge_padding_x, badge_y + badge_padding_y)
-
-        # Add all vector items to scene
+        # Single addItem call attaches the entire C++ parent-child subtree to the scene
         self._scene.addItem(rect_item)
-        self._scene.addItem(badge_bg)
-        self._scene.addItem(text_item)
 
         return DetectionItem(
             raw_data=det,
@@ -578,10 +723,27 @@ class CanvasViewer(QGraphicsView):
 
     def clear_detections(self) -> None:
         """Remove all detection vector overlay items from the scene."""
-        for item in self._detection_items:
-            item.remove_from_scene(self._scene)
-        self._detection_items.clear()
-        self._detections_raw.clear()
+        if not self._detection_items and not self._detections_raw:
+            self._emit_visible_count()
+            return
+
+        prev_index_method = self._scene.itemIndexMethod()
+        use_batch = (
+            prev_index_method != QGraphicsScene.ItemIndexMethod.NoIndex
+            and len(self._detection_items) > 16
+        )
+        if use_batch:
+            self._scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
+            QCoreApplication.sendPostedEvents(self._scene, 0)
+        try:
+            for item in reversed(self._detection_items):
+                item.remove_from_scene(self._scene)
+            self._detection_items.clear()
+            self._detections_raw.clear()
+        finally:
+            if use_batch:
+                self._scene.setItemIndexMethod(prev_index_method)
+                QCoreApplication.sendPostedEvents(self._scene, 0)
         self._emit_visible_count()
 
     def get_detections(self) -> List[Dict[str, Any]]:
@@ -631,11 +793,12 @@ class CanvasViewer(QGraphicsView):
 
     def _apply_filters(self) -> None:
         """Update visibility of each detection item according to current filters."""
+        min_conf = self._min_confidence
+        vis_classes = self._visible_classes
         for item in self._detection_items:
-            visible = (item.confidence >= self._min_confidence) and (
-                item.class_id in self._visible_classes
-            )
-            item.set_visible(visible)
+            visible = (item.confidence >= min_conf) and (item.class_id in vis_classes)
+            if item.is_visible() != visible:
+                item.set_visible(visible)
         self._scene.update()
         if self.viewport():
             self.viewport().update()

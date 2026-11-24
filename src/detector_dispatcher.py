@@ -682,9 +682,9 @@ class TensorRTBackend(InferenceBackend):
 
         trt_logger = trt.Logger(trt.Logger.WARNING)
         builder = trt.Builder(trt_logger)
-        network = builder.create_network(
-            1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        )
+        explicit_batch_flag = getattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH", None)
+        network_flags = (1 << int(explicit_batch_flag)) if explicit_batch_flag is not None else 0
+        network = builder.create_network(network_flags)
         parser = trt.OnnxParser(network, trt_logger)
 
         if not parser.parse_from_file(str(onnx_path)):
