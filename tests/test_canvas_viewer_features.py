@@ -105,7 +105,7 @@ class TestCanvasViewerFeatures:
         assert "plane" in restored_text
 
     def test_scale_overlay_text_with_zoom_toggle(self, qapp):
-        """Verify ItemIgnoresTransformations flag is toggled on text and badge items."""
+        """Verify ItemIgnoresTransformations flag is toggled on parent badge_bg (inherited by text_item)."""
         viewer = CanvasViewer()
         sample_detections = [
             {"id": 1, "x": 300.0, "y": 300.0, "w": 50.0, "h": 50.0, "conf": 0.85, "class_id": 1}
@@ -115,20 +115,25 @@ class TestCanvasViewerFeatures:
         text_items = [it for it in viewer.scene().items() if isinstance(it, QGraphicsSimpleTextItem)]
         assert len(text_items) == 1
         txt_item = text_items[0]
+        badge_bg = txt_item.parentItem()
+        assert badge_bg is not None
 
         # 1. When scale_text_with_zoom is True (default), ItemIgnoresTransformations is NOT set
         viewer.set_scale_text_with_zoom(True)
         assert viewer.is_scale_text_with_zoom() is True
         flag = QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations
+        assert not bool(badge_bg.flags() & flag)
         assert not bool(txt_item.flags() & flag)
 
-        # 2. When scale_text_with_zoom is False, ItemIgnoresTransformations MUST be set
+        # 2. When scale_text_with_zoom is False, ItemIgnoresTransformations MUST be set on badge_bg ONLY
         viewer.set_scale_text_with_zoom(False)
         assert viewer.is_scale_text_with_zoom() is False
-        assert bool(txt_item.flags() & flag)
+        assert bool(badge_bg.flags() & flag)
+        assert not bool(txt_item.flags() & flag)
 
         # 3. Switching back clears the flag
         viewer.set_scale_text_with_zoom(True)
+        assert not bool(badge_bg.flags() & flag)
         assert not bool(txt_item.flags() & flag)
 
     def test_font_size_and_box_border_updates(self, qapp):

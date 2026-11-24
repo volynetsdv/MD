@@ -252,12 +252,10 @@ def build_trt_engine(
         trt.MemoryPoolType.WORKSPACE, workspace_mb * 1024 * 1024
     )
 
-    # Explicit batch network definition (required for ONNX in TRT < 10, default in TRT >= 10)
-    if hasattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH"):
-        flag = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        network = builder.create_network(flag)
-    else:
-        network = builder.create_network()
+    # Explicit batch network definition (required for ONNX in TRT < 10, default/removed in TRT >= 11)
+    explicit_batch_flag = getattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH", None)
+    network_flags = (1 << int(explicit_batch_flag)) if explicit_batch_flag is not None else 0
+    network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, trt_logger)
 
     with open(onnx_path, "rb") as f:
